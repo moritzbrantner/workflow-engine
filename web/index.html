@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Interactive GitHub Pages companion for workflow-engine: versioned definitions, triggers, run records, scheduling, and runner dispatch." />
+  <title>Workflow Engine</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Workflow Engine home">
+      <span class="brand-mark" aria-hidden="true">WE</span>
+      <span>workflow-engine</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#model">Model</a>
+      <a href="#playground">Playground</a>
+      <a href="#boundary">Boundary</a>
+      <a class="github-link" href="https://github.com/moritzbrantner/workflow-engine">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero section-shell">
+      <div class="hero-copy">
+        <p class="eyebrow">Workflow orchestration, not execution</p>
+        <h1>Decide <span>when</span> and <span>what</span> to run.</h1>
+        <p class="hero-lede">
+          Version immutable workflow definitions, attach manual, webhook, and UTC cron triggers,
+          pin every run to an exact definition, then hand execution across a deliberately small dispatcher boundary.
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="#playground">Try the contract</a>
+          <a class="button secondary" href="#boundary">See the architecture</a>
+        </div>
+      </div>
+
+      <div class="hero-terminal" aria-label="Workflow lifecycle example">
+        <div class="terminal-bar">
+          <span></span><span></span><span></span>
+          <code>run: daily-report</code>
+        </div>
+        <div class="terminal-body">
+          <div class="terminal-row"><span class="muted">definition</span><strong>daily-report@3</strong></div>
+          <div class="terminal-row"><span class="muted">trigger</span><strong>cron · 0 8 * * *</strong></div>
+          <div class="terminal-row"><span class="muted">status</span><strong class="success">succeeded</strong></div>
+          <div class="terminal-row"><span class="muted">digest</span><code>f4d1…8a9c</code></div>
+          <div class="terminal-flow" aria-hidden="true">
+            <span>queued</span><i></i><span>running</span><i></i><span>succeeded</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="model" class="section-shell model-section">
+      <div class="section-heading">
+        <p class="eyebrow">Core model</p>
+        <h2>Five objects, one explicit lifecycle.</h2>
+        <p>The engine stays small by owning orchestration state and leaving node execution elsewhere.</p>
+      </div>
+
+      <div class="model-grid">
+        <article class="model-card">
+          <span class="card-index">01</span>
+          <h3>Definition</h3>
+          <p>A compiled workflow is registered immutably. A changed SHA-256 digest creates the next monotonic version.</p>
+          <code>workflowId + version + digest</code>
+        </article>
+        <article class="model-card">
+          <span class="card-index">02</span>
+          <h3>Trigger</h3>
+          <p>Manual, webhook, and five-field UTC cron triggers resolve either a pinned or latest definition.</p>
+          <code>manual | webhook | cron</code>
+        </article>
+        <article class="model-card">
+          <span class="card-index">03</span>
+          <h3>Run</h3>
+          <p>Every run permanently records the exact workflow version and digest that was selected for dispatch.</p>
+          <code>queued → running → terminal</code>
+        </article>
+        <article class="model-card">
+          <span class="card-index">04</span>
+          <h3>Store</h3>
+          <p>The MVP uses an in-memory store behind an explicit interface so persistence can replace it later.</p>
+          <code>definitions + triggers + runs</code>
+        </article>
+        <article class="model-card">
+          <span class="card-index">05</span>
+          <h3>Dispatcher</h3>
+          <p>A structural interface hands the pinned workflow to a runner without importing runner implementation code.</p>
+          <code>dispatch(request) → result</code>
+        </article>
+      </div>
+    </section>
+
+    <section id="playground" class="playground-section">
+      <div class="section-shell">
+        <div class="section-heading playground-heading">
+          <div>
+            <p class="eyebrow">Browser contract simulator</p>
+            <h2>Change a definition. See what the engine preserves.</h2>
+          </div>
+          <p class="simulator-note">
+            This static demo mirrors the engine's versioning and run-record contract in the browser. Dispatch success is simulated; workflow nodes are not executed here.
+          </p>
+        </div>
+
+        <div class="playground-grid">
+          <section class="panel editor-panel" aria-labelledby="definition-title">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Definition</p>
+                <h3 id="definition-title">Compiled workflow</h3>
+              </div>
+              <span id="definition-state" class="status-pill neutral">unregistered</span>
+            </div>
+
+            <label class="field-label" for="workflow-id">Workflow ID</label>
+            <input id="workflow-id" class="text-input" value="daily-report" autocomplete="off" />
+
+            <label class="field-label" for="definition-editor">Definition JSON</label>
+            <textarea id="definition-editor" class="code-editor" spellcheck="false" aria-describedby="editor-help">{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 1,
+  "nodes": [
+    { "id": "start", "kind": "control.start", "outputs": [{ "id": "out" }] },
+    { "id": "report", "kind": "task.report", "inputs": [{ "id": "in" }], "outputs": [{ "id": "out" }] },
+    { "id": "end", "kind": "control.end", "inputs": [{ "id": "in" }] }
+  ],
+  "edges": [
+    { "id": "e1", "sourceNodeId": "start", "sourcePortId": "out", "targetNodeId": "report", "targetPortId": "in" },
+    { "id": "e2", "sourceNodeId": "report", "sourcePortId": "out", "targetNodeId": "end", "targetPortId": "in" }
+  ],
+  "order": ["start", "report", "end"]
+}</textarea>
+            <p id="editor-help" class="field-help">Registering the identical latest digest is idempotent. Change any value to create the next version.</p>
+            <button id="register-button" class="button primary full-width" type="button">Register definition</button>
+            <p id="register-message" class="inline-message" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="panel state-panel" aria-labelledby="state-title">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Engine state</p>
+                <h3 id="state-title">Versions & triggers</h3>
+              </div>
+              <span id="version-count" class="counter">0 versions</span>
+            </div>
+
+            <div id="versions-list" class="version-list empty-state">
+              Register the definition to create version 1.
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="trigger-heading">
+              <div>
+                <p class="panel-kicker">Fire trigger</p>
+                <h3>Resolve & dispatch</h3>
+              </div>
+              <span class="tiny-label">latest version</span>
+            </div>
+
+            <div class="trigger-grid">
+              <button class="trigger-button" data-trigger="manual" type="button">
+                <span class="trigger-icon">M</span>
+                <span><strong>Manual</strong><small>explicit fire</small></span>
+              </button>
+              <button class="trigger-button" data-trigger="webhook" type="button">
+                <span class="trigger-icon">W</span>
+                <span><strong>Webhook</strong><small>POST /hooks/report</small></span>
+              </button>
+              <button class="trigger-button" data-trigger="cron" type="button">
+                <span class="trigger-icon">C</span>
+                <span><strong>Cron</strong><small>0 8 * * *</small></span>
+              </button>
+            </div>
+            <p id="trigger-message" class="inline-message" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="panel run-panel" aria-labelledby="run-title">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Run record</p>
+                <h3 id="run-title">Pinned execution intent</h3>
+              </div>
+              <span id="run-status" class="status-pill neutral">idle</span>
+            </div>
+
+            <div class="run-timeline" aria-label="Run status progression">
+              <div class="timeline-step" data-step="queued"><span></span><strong>queued</strong></div>
+              <div class="timeline-line"></div>
+              <div class="timeline-step" data-step="running"><span></span><strong>running</strong></div>
+              <div class="timeline-line"></div>
+              <div class="timeline-step" data-step="succeeded"><span></span><strong>succeeded</strong></div>
+            </div>
+
+            <pre id="run-record" class="run-record" aria-live="polite">{
+  "status": "idle",
+  "message": "Fire a trigger after registering a definition."
+}</pre>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section id="boundary" class="section-shell boundary-section">
+      <div class="section-heading">
+        <p class="eyebrow">Architecture boundary</p>
+        <h2>The engine orchestrates. The runner executes.</h2>
+      </div>
+
+      <div class="architecture" aria-label="Workflow engine architecture diagram">
+        <div class="architecture-node source-node">
+          <span>Input</span>
+          <strong>Trigger</strong>
+          <small>manual · webhook · cron</small>
+        </div>
+        <div class="architecture-arrow"><span>resolve</span></div>
+        <div class="architecture-node engine-node">
+          <span>workflow-engine</span>
+          <strong>Version + run record</strong>
+          <small>decides what & when</small>
+        </div>
+        <div class="architecture-arrow"><span>dispatch</span></div>
+        <div class="architecture-node runner-node">
+          <span>workflow-runner</span>
+          <strong>Execute nodes</strong>
+          <small>returns terminal result</small>
+        </div>
+      </div>
+
+      <div class="principles-grid">
+        <div>
+          <strong>Immutable intent</strong>
+          <p>A run cannot silently drift to a newer workflow definition after dispatch.</p>
+        </div>
+        <div>
+          <strong>Replaceable infrastructure</strong>
+          <p>Storage and dispatch are seams, not assumptions embedded into workflow documents.</p>
+        </div>
+        <div>
+          <strong>Single responsibility</strong>
+          <p>Scheduling and orchestration remain separate from node execution mechanics.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer section-shell">
+    <span>workflow-engine</span>
+    <span>Versioned definitions · triggers · runs · dispatch</span>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
