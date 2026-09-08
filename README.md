@@ -30,6 +30,10 @@ engine.registerTrigger({
 
 This MVP is deliberately single-process. The store and dispatcher are explicit boundaries so persistent storage and queue-backed dispatch can replace the in-memory pieces later without changing workflow documents.
 
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for the next implementation slices and boundary constraints.
+
 ## Development
 
 ```sh
