@@ -207,3 +207,31 @@ test("keeps a schedule claim after dispatch failure so retry cannot duplicate th
   assert.deepEqual(await restarted.tick(new Date("2026-08-27T12:05:50.000Z")), []);
   assert.equal(retryDispatches, 0);
 });
+
+
+test("derives the same schedule idempotency key without shared process state", async () => {
+  const scheduledKey = async (prefix: string, observedAt: string) => {
+    const store = createInMemoryWorkflowEngineStore();
+    const engine = createWorkflowEngine({
+      dispatcher: createDispatcher(),
+      store,
+      createId: deterministicIds(prefix),
+    });
+    engine.registerWorkflow({ workflowId: "deterministic-key", workflow });
+    engine.registerTrigger({
+      id: "stable-trigger-id",
+      type: "cron",
+      workflowId: "deterministic-key",
+      cron: "* * * * *",
+    });
+
+    const runs = await engine.tick(new Date(observedAt));
+    assert.equal(runs.length, 1);
+    return runs[0]?.idempotencyKey;
+  };
+
+  const first = await scheduledKey("process-a", "2026-08-27T12:05:01.000Z");
+  const second = await scheduledKey("process-b", "2026-08-27T12:05:59.999Z");
+
+  assert.equal(first, second);
+});
