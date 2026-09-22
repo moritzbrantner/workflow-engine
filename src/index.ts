@@ -46,6 +46,7 @@ export type WorkflowRunDispatchRequest = {
   workflow: ExecutableWorkflow;
   input?: Record<string, unknown>;
   context?: Record<string, unknown>;
+  idempotencyKey?: string;
 };
 
 export type WorkflowRunDispatchResult =
@@ -100,12 +101,19 @@ export type WorkflowTriggerInput =
 
 export type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
+export type WorkflowScheduleClaim = {
+  triggerId: string;
+  scheduledAt: string;
+  idempotencyKey: string;
+};
+
 export type WorkflowRunRecord = {
   id: string;
   workflowId: string;
   workflowVersion: number;
   workflowDigest: string;
   triggerId?: string;
+  idempotencyKey?: string;
   status: WorkflowRunStatus;
   input: Record<string, unknown>;
   context: Record<string, unknown>;
@@ -123,6 +131,11 @@ export type WorkflowEngineStore = {
   saveTrigger(trigger: WorkflowTrigger): void;
   getTrigger(triggerId: string): WorkflowTrigger | undefined;
   listTriggers(): WorkflowTrigger[];
+  /**
+   * Atomically claims one scheduled trigger occurrence.
+   * Returns false when the same (triggerId, scheduledAt) occurrence was already claimed.
+   */
+  claimSchedule(claim: WorkflowScheduleClaim): boolean;
   saveRun(run: WorkflowRunRecord): void;
   getRun(runId: string): WorkflowRunRecord | undefined;
   listRuns(): WorkflowRunRecord[];
@@ -176,6 +189,7 @@ function clone<T>(value: T): T {
 export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
   const definitions = new Map<string, WorkflowDefinition[]>();
   const triggers = new Map<string, WorkflowTrigger>();
+  const scheduleClaims = new Set<string>();
   const runs = new Map<string, WorkflowRunRecord>();
 
   return {
@@ -198,6 +212,12 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
     },
     listTriggers() {
       return [...triggers.values()].map(clone);
+    },
+    claimSchedule(claim) {
+      const key = JSON.stringify([claim.triggerId, claim.scheduledAt]);
+      if (scheduleClaims.has(key)) return false;
+      scheduleClaims.add(key);
+      return true;
     },
     saveRun(run) {
       runs.set(run.id, clone(run));
@@ -344,15 +364,23 @@ function assertValidCron(expression: string): void {
   matchesCron(expression, new Date("2026-01-01T00:00:00.000Z"));
 }
 
-function minuteKey(date: Date): string {
-  return date.toISOString().slice(0, 16);
+function scheduledMinute(date: Date): string {
+  const scheduledAt = new Date(date);
+  scheduledAt.setUTCSeconds(0, 0);
+  return scheduledAt.toISOString();
+}
+
+function scheduleIdempotencyKey(triggerId: string, scheduledAt: string): string {
+  const digest = createHash("sha256")
+    .update(stableStringify({ triggerId, scheduledAt }))
+    .digest("hex");
+  return `schedule:${digest}`;
 }
 
 export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngine {
   const store = options.store ?? createInMemoryWorkflowEngineStore();
   const now = options.now ?? (() => new Date());
   const createId = options.createId ?? randomUUID;
-  const lastCronFire = new Map<string, string>();
 
   const resolveDefinition = (workflowId: string, version?: number): WorkflowDefinition => {
     const definitions = store.listDefinitions(workflowId);
@@ -370,7 +398,11 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     return definition;
   };
 
-  const startRun = async (input: StartWorkflowRunInput): Promise<WorkflowRunRecord> => {
+  type StartWorkflowRunInternalInput = StartWorkflowRunInput & {
+    idempotencyKey?: string;
+  };
+
+  const startRun = async (input: StartWorkflowRunInternalInput): Promise<WorkflowRunRecord> => {
     const definition = resolveDefinition(input.workflowId, input.workflowVersion);
     const createdAt = now().toISOString();
     let run: WorkflowRunRecord = {
@@ -379,6 +411,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       workflowVersion: definition.version,
       workflowDigest: definition.digest,
       ...(input.triggerId ? { triggerId: input.triggerId } : {}),
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       status: "queued",
       input: clone(input.input ?? {}),
       context: clone(input.context ?? {}),
@@ -395,6 +428,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         workflow: clone(definition.workflow),
         input: clone(run.input),
         context: clone(run.context),
+        ...(run.idempotencyKey ? { idempotencyKey: run.idempotencyKey } : {}),
       });
       const finishedAt = now().toISOString();
       if (result.status === "succeeded") {
@@ -510,7 +544,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     },
 
     async tick(tickDate = now()) {
-      const key = minuteKey(tickDate);
+      const scheduledAt = scheduledMinute(tickDate);
       const triggers = store
         .listTriggers()
         .filter(
@@ -518,10 +552,19 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         );
       const runs: WorkflowRunRecord[] = [];
       for (const trigger of triggers) {
-        if (lastCronFire.get(trigger.id) === key || !matchesCron(trigger.cron, tickDate)) {
+        if (!matchesCron(trigger.cron, tickDate)) {
           continue;
         }
-        lastCronFire.set(trigger.id, key);
+
+        const claim: WorkflowScheduleClaim = {
+          triggerId: trigger.id,
+          scheduledAt,
+          idempotencyKey: scheduleIdempotencyKey(trigger.id, scheduledAt),
+        };
+        if (!store.claimSchedule(claim)) {
+          continue;
+        }
+
         runs.push(
           await startRun({
             workflowId: trigger.workflowId,
@@ -529,7 +572,8 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
               ? {}
               : { workflowVersion: trigger.workflowVersion }),
             triggerId: trigger.id,
-            input: { scheduledAt: tickDate.toISOString() },
+            idempotencyKey: claim.idempotencyKey,
+            input: { scheduledAt },
           }),
         );
       }
