@@ -10,15 +10,7 @@ Related: #2.
 
 ## P0 — Durable schedule idempotency
 
-The MVP prevents a cron trigger from firing twice in the same minute only inside one process. Restarts or multiple engine instances can therefore duplicate scheduled runs.
-
-Next slice:
-
-- move schedule claims behind `WorkflowEngineStore`;
-- claim `(triggerId, scheduled UTC minute)` atomically before dispatch;
-- give a scheduled run a deterministic idempotency key independent of process memory;
-- make replay after restart safe;
-- add tests for two engine instances sharing one store and for restart/retry scenarios.
+Status: schedule occurrence claims now live behind `WorkflowEngineStore` and are taken atomically for `(triggerId, scheduled UTC minute)` before dispatch. Scheduled runs carry a deterministic idempotency key and a minute-normalized `scheduledAt`, so multiple engine instances sharing a store, engine recreation, and retry after dispatch failure cannot duplicate the same occurrence. The in-memory adapter retains claims for its own lifetime; a future persistent store can make the same contract survive process loss without changing engine scheduling semantics.
 
 ## P1 — Durable storage and atomic version registration
 
