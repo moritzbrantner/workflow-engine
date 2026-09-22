@@ -4,15 +4,7 @@ The workflow engine owns workflow registration/versioning, triggers, scheduling,
 
 ## P0 — Compiled workflow boundary
 
-Status: the MVP accepts `@moritzbrantner/workflow/compiled` version 1 and the cross-repository conformance fixture pins the current editor → engine handoff.
-
-Next slice:
-
-- validate compiled workflow values at the runtime boundary before hashing or persisting them;
-- return stable structured diagnostics for unsupported versions, malformed nodes/edges/order, duplicate ids, missing endpoints, and invalid ports;
-- keep validation deterministic and side-effect free;
-- preserve unknown forward-compatible node data without weakening the versioned envelope;
-- verify the canonical editor fixture can be registered, deduplicated, pinned to a run, and dispatched byte-for-semantics unchanged.
+Status: compiled workflow values are validated at the runtime registration boundary before hashing or persistence. Version 1 validation returns stable structured diagnostics for malformed graph structure, duplicate ids, missing endpoints, invalid ports, and invalid order entries while preserving unknown forward-compatible node and port payload. The canonical editor fixture remains byte-for-semantics unchanged through registration and dispatch.
 
 Related: #2.
 
