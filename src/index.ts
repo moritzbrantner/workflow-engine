@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 
+import { assertExecutableWorkflow } from "./validation";
+
+export {
+  InvalidExecutableWorkflowError,
+  validateExecutableWorkflow,
+  type ExecutableWorkflowDiagnostic,
+  type ExecutableWorkflowDiagnosticCode,
+  type ExecutableWorkflowValidationResult,
+} from "./validation";
+
 export type ExecutableWorkflowPort = {
   id: string;
   optional?: boolean;
@@ -427,8 +437,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
 
   return {
     registerWorkflow(input) {
+      const workflow = assertExecutableWorkflow(input.workflow);
       const versions = store.listDefinitions(input.workflowId);
-      const digest = digestExecutableWorkflow(input.workflow);
+      const digest = digestExecutableWorkflow(workflow);
       const latest = versions.at(-1);
       if (latest?.digest === digest) return latest;
 
@@ -436,7 +447,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         workflowId: input.workflowId,
         version: (latest?.version ?? 0) + 1,
         digest,
-        workflow: clone(input.workflow),
+        workflow: clone(workflow),
         createdAt: now().toISOString(),
       };
       store.saveDefinition(definition);
