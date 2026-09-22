@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { assertExecutableWorkflow } from "./validation";
+import { assertExecutableWorkflow } from "./validation.js";
 
 export {
   InvalidExecutableWorkflowError,
@@ -8,7 +8,7 @@ export {
   type ExecutableWorkflowDiagnostic,
   type ExecutableWorkflowDiagnosticCode,
   type ExecutableWorkflowValidationResult,
-} from "./validation";
+} from "./validation.js";
 
 export type ExecutableWorkflowPort = {
   id: string;
