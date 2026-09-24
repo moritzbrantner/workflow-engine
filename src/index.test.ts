@@ -191,7 +191,8 @@ test("keeps a schedule claim after dispatch failure so retry cannot duplicate th
   const scheduledMinute = new Date("2026-08-27T12:05:45.000Z");
   const firstRuns = await engine.tick(scheduledMinute);
   assert.equal(firstRuns.length, 1);
-  assert.equal(firstRuns[0]?.status, "failed");
+  assert.equal(firstRuns[0]?.status, "interrupted");
+  assert.equal(firstRuns[0]?.recoveryDisposition, "manual");
   assert.equal(failingDispatches, 1);
 
   let retryDispatches = 0;
