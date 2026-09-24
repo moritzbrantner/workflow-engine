@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
-import { assertWorkflowRunTransition } from "./run-state.js";
+import {
+  assertWorkflowRunTransition,
+  prepareWorkflowRunForDispatch,
+} from "./run-state.js";
 import {
   WorkflowDefinitionVersionConflictError,
   WorkflowRunIdempotencyConflictError,
@@ -179,7 +182,16 @@ export type WorkflowEngineStore = {
    * Returns false when the same (triggerId, scheduledAt) occurrence was already claimed.
    */
   claimSchedule(claim: WorkflowScheduleClaim): boolean;
+  /**
+   * Atomically claims a schedule occurrence and persists its initial queued run.
+   */
+  claimScheduleRun(claim: WorkflowScheduleClaim, run: WorkflowRunRecord): boolean;
   saveRun(run: WorkflowRunRecord): void;
+  /**
+   * Atomically transitions a queued or retryable-interrupted run into a new running dispatch
+   * attempt. Returns undefined when another owner already claimed or completed the run.
+   */
+  claimRunForDispatch(runId: string, startedAt: string): WorkflowRunRecord | undefined;
   getRun(runId: string): WorkflowRunRecord | undefined;
   getRunByIdempotencyKey(idempotencyKey: string): WorkflowRunRecord | undefined;
   listRuns(): WorkflowRunRecord[];
@@ -285,6 +297,30 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       scheduleClaims.add(key);
       return true;
     },
+    claimScheduleRun(claim, run) {
+      const key = JSON.stringify([claim.triggerId, claim.scheduledAt]);
+      if (scheduleClaims.has(key)) return false;
+      if (
+        run.status !== "queued" ||
+        run.dispatchAttempts !== 0 ||
+        run.triggerId !== claim.triggerId ||
+        run.idempotencyKey !== claim.idempotencyKey
+      ) {
+        throw new Error("Scheduled workflow runs must start queued and match their schedule claim.");
+      }
+
+      const sameKey = [...runs.values()].find(
+        (candidate) => candidate.idempotencyKey === run.idempotencyKey,
+      );
+      if (sameKey && sameKey.id !== run.id) {
+        throw new WorkflowRunIdempotencyConflictError(run.idempotencyKey);
+      }
+      assertWorkflowRunTransition(undefined, run);
+
+      scheduleClaims.add(key);
+      runs.set(run.id, clone(run));
+      return true;
+    },
     saveRun(run) {
       const sameKey = [...runs.values()].find(
         (candidate) => candidate.idempotencyKey === run.idempotencyKey,
@@ -297,6 +333,14 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       assertWorkflowRunTransition(previous, run);
       if (previous && isDeepStrictEqual(previous, run)) return;
       runs.set(run.id, clone(run));
+    },
+    claimRunForDispatch(runId, startedAt) {
+      const current = runs.get(runId);
+      if (!current) return undefined;
+      const claimed = prepareWorkflowRunForDispatch(current, startedAt);
+      if (!claimed) return undefined;
+      runs.set(runId, clone(claimed));
+      return clone(claimed);
     },
     getRun(runId) {
       const run = runs.get(runId);
