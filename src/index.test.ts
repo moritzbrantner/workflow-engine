@@ -5,6 +5,8 @@ import {
   createInMemoryWorkflowEngineStore,
   createWorkflowEngine,
   matchesCron,
+  WorkflowDispatchError,
+  WorkflowRunIdempotencyConflictError,
   type ExecutableWorkflow,
   type WorkflowRunDispatchRequest,
   type WorkflowRunDispatcher,
@@ -234,4 +236,153 @@ test("derives the same schedule idempotency key without shared process state", a
   const second = await scheduledKey("process-b", "2026-08-27T12:05:59.999Z");
 
   assert.equal(first, second);
+});
+
+
+test("recovers a proven not-dispatched run with the same run identity", async () => {
+  const store = createInMemoryWorkflowEngineStore();
+  let initialDispatches = 0;
+  const firstEngine = createWorkflowEngine({
+    store,
+    createId: deterministicIds("recoverable"),
+    dispatcher: {
+      async dispatch() {
+        initialDispatches += 1;
+        throw new WorkflowDispatchError("queue unavailable", "not-dispatched");
+      },
+    },
+  });
+  firstEngine.registerWorkflow({ workflowId: "evaluation", workflow });
+
+  const interrupted = await firstEngine.startRun({
+    workflowId: "evaluation",
+    idempotencyKey: "evaluation:source-1",
+    input: { sourceId: "source-1" },
+  });
+
+  assert.equal(interrupted.status, "interrupted");
+  assert.equal(interrupted.recoveryDisposition, "retryable");
+  assert.equal(interrupted.failureKind, "dispatch");
+  assert.equal(interrupted.dispatchAttempts, 1);
+  assert.equal(initialDispatches, 1);
+
+  const delivered: WorkflowRunDispatchRequest[] = [];
+  const restarted = createWorkflowEngine({
+    store,
+    createId: deterministicIds("unused"),
+    dispatcher: {
+      async dispatch(request) {
+        delivered.push(structuredClone(request));
+        return { status: "succeeded", output: { judgmentId: "judgment:1" } };
+      },
+    },
+  });
+
+  const recovery = await restarted.recoverRuns();
+  assert.equal(recovery.ambiguous.length, 0);
+  assert.equal(recovery.recovered.length, 1);
+  const recovered = recovery.recovered[0];
+  assert.equal(recovered?.id, interrupted.id);
+  assert.equal(recovered?.idempotencyKey, interrupted.idempotencyKey);
+  assert.equal(recovered?.dispatchAttempts, 2);
+  assert.equal(recovered?.status, "succeeded");
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0]?.runId, interrupted.id);
+  assert.equal(delivered[0]?.idempotencyKey, interrupted.idempotencyKey);
+
+  assert.deepEqual(await restarted.recoverRuns(), { recovered: [], ambiguous: [] });
+});
+
+test("does not redispatch an ambiguous interrupted run", async () => {
+  const store = createInMemoryWorkflowEngineStore();
+  const engine = createWorkflowEngine({
+    store,
+    createId: deterministicIds("ambiguous"),
+    dispatcher: {
+      async dispatch() {
+        throw new Error("connection dropped after delivery");
+      },
+    },
+  });
+  engine.registerWorkflow({ workflowId: "evaluation", workflow });
+
+  const interrupted = await engine.startRun({
+    workflowId: "evaluation",
+    input: { sourceId: "source-1" },
+  });
+  assert.equal(interrupted.status, "interrupted");
+  assert.equal(interrupted.recoveryDisposition, "manual");
+
+  let redispatches = 0;
+  const restarted = createWorkflowEngine({
+    store,
+    dispatcher: {
+      async dispatch() {
+        redispatches += 1;
+        return { status: "succeeded", output: {} };
+      },
+    },
+  });
+  const recovery = await restarted.recoverRuns();
+
+  assert.equal(recovery.recovered.length, 0);
+  assert.equal(recovery.ambiguous.length, 1);
+  assert.equal(recovery.ambiguous[0]?.id, interrupted.id);
+  assert.equal(redispatches, 0);
+});
+
+test("reuses an existing run for the same explicit idempotency key", async () => {
+  let dispatches = 0;
+  const engine = createWorkflowEngine({
+    dispatcher: {
+      async dispatch(request) {
+        dispatches += 1;
+        return { status: "succeeded", output: request.input ?? {} };
+      },
+    },
+    createId: deterministicIds("idempotent"),
+  });
+  engine.registerWorkflow({ workflowId: "evaluation", workflow });
+
+  const first = await engine.startRun({
+    workflowId: "evaluation",
+    idempotencyKey: "evaluation:stable",
+    input: { sourceId: "source-1" },
+  });
+  const duplicate = await engine.startRun({
+    workflowId: "evaluation",
+    idempotencyKey: "evaluation:stable",
+    input: { sourceId: "source-1" },
+  });
+
+  assert.equal(duplicate.id, first.id);
+  assert.equal(dispatches, 1);
+
+  await assert.rejects(
+    engine.startRun({
+      workflowId: "evaluation",
+      idempotencyKey: "evaluation:stable",
+      input: { sourceId: "different-source" },
+    }),
+    WorkflowRunIdempotencyConflictError,
+  );
+});
+
+test("workflow execution failures are terminal and are not recovered", async () => {
+  const store = createInMemoryWorkflowEngineStore();
+  const engine = createWorkflowEngine({
+    store,
+    createId: deterministicIds("workflow-failure"),
+    dispatcher: {
+      async dispatch() {
+        return { status: "failed", error: { code: "MODEL_REJECTED" } };
+      },
+    },
+  });
+  engine.registerWorkflow({ workflowId: "evaluation", workflow });
+  const failed = await engine.startRun({ workflowId: "evaluation" });
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.failureKind, "workflow");
+  assert.deepEqual(await engine.recoverRuns(), { recovered: [], ambiguous: [] });
 });
