@@ -51,7 +51,9 @@ const recovery = await engine.recoverRuns();
 console.log(recovery.recovered, recovery.ambiguous);
 ```
 
-An unclassified dispatcher exception or a persisted `running` record has an unknown execution outcome. Recovery marks it `interrupted` with `manual` disposition and does **not** replay it automatically. A dispatcher adapter that knows delivery never occurred may throw `WorkflowDispatchError(message, "not-dispatched")` to make that interruption retryable.
+An unclassified dispatcher exception becomes `interrupted` with `manual` disposition and is not replayed automatically. A persisted `running` record is also reported through `recovery.ambiguous`, but recovery leaves it unchanged because another engine instance may still own the active dispatch. A dispatcher adapter that knows delivery never occurred may throw `WorkflowDispatchError(message, "not-dispatched")` to make that interruption retryable.
+
+Cron scheduling commits the occurrence claim and its initial queued run in one store transaction, so a process cannot durably claim a minute without leaving a recoverable run. Dispatch/recovery similarly uses an atomic store claim before invoking the dispatcher, preventing two engine instances from executing the same queued run concurrently.
 
 ## Roadmap
 
