@@ -97,3 +97,27 @@ export function assertWorkflowRunTransition(
     );
   }
 }
+
+
+export function prepareWorkflowRunForDispatch(
+  current: WorkflowRunRecord,
+  startedAt: string,
+): WorkflowRunRecord | undefined {
+  const claimable =
+    current.status === "queued" ||
+    (current.status === "interrupted" && current.recoveryDisposition === "retryable");
+  if (!claimable) return undefined;
+
+  const next = structuredClone(current);
+  next.status = "running";
+  next.dispatchAttempts += 1;
+  next.startedAt ??= startedAt;
+  delete next.output;
+  delete next.error;
+  delete next.events;
+  delete next.failureKind;
+  delete next.recoveryDisposition;
+  delete next.finishedAt;
+  assertWorkflowRunTransition(current, next);
+  return next;
+}
