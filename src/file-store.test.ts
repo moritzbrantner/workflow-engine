@@ -11,6 +11,7 @@ import {
   digestExecutableWorkflow,
   InvalidWorkflowRunTransitionError,
   WorkflowDefinitionVersionConflictError,
+  WorkflowDispatchError,
   WorkflowRunIdempotencyConflictError,
   type ExecutableWorkflow,
   type WorkflowDefinition,
@@ -292,6 +293,63 @@ test("restart marks a previously running dispatch as ambiguous instead of replay
     assert.equal(secondRecovery.recovered.length, 0);
     assert.equal(secondRecovery.ambiguous.length, 1);
     assert.equal(redispatches, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("retryable dispatch interruption survives a durable store reopen", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workflow-engine-retryable-"));
+  const filePath = join(directory, "state.json");
+
+  try {
+    const first = createWorkflowEngine({
+      store: createFileWorkflowEngineStore(filePath),
+      createId: deterministicIds("durable-retry"),
+      dispatcher: {
+        async dispatch() {
+          throw new WorkflowDispatchError("queue unavailable", "not-dispatched");
+        },
+      },
+    });
+    const definition = first.registerWorkflow({ workflowId: "evaluation", workflow });
+    const interrupted = await first.startRun({
+      workflowId: "evaluation",
+      idempotencyKey: "evaluation:durable",
+      input: { sourceId: "source-1" },
+    });
+
+    assert.equal(interrupted.status, "interrupted");
+    assert.equal(interrupted.recoveryDisposition, "retryable");
+    assert.equal(interrupted.workflowDigest, definition.digest);
+
+    const deliveries: Array<{ runId: string; idempotencyKey: string }> = [];
+    const restarted = createWorkflowEngine({
+      store: createFileWorkflowEngineStore(filePath),
+      dispatcher: {
+        async dispatch(request) {
+          deliveries.push({
+            runId: request.runId,
+            idempotencyKey: request.idempotencyKey,
+          });
+          return { status: "succeeded", output: { ok: true } };
+        },
+      },
+    });
+
+    const recovery = await restarted.recoverRuns();
+    assert.equal(recovery.ambiguous.length, 0);
+    assert.equal(recovery.recovered.length, 1);
+    assert.equal(recovery.recovered[0]?.id, interrupted.id);
+    assert.equal(recovery.recovered[0]?.workflowDigest, definition.digest);
+    assert.equal(recovery.recovered[0]?.dispatchAttempts, 2);
+    assert.deepEqual(deliveries, [
+      {
+        runId: interrupted.id,
+        idempotencyKey: interrupted.idempotencyKey,
+      },
+    ]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
