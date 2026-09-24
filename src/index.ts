@@ -553,21 +553,23 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     return definition;
   };
 
+  type DispatchAttempt = {
+    dispatched: boolean;
+    run: WorkflowRunRecord;
+  };
+
   const dispatchRun = async (
     definition: WorkflowDefinition,
-    current: WorkflowRunRecord,
-  ): Promise<WorkflowRunRecord> => {
-    let run = clone(current);
-    run.status = "running";
-    run.dispatchAttempts += 1;
-    run.startedAt ??= now().toISOString();
-    delete run.output;
-    delete run.error;
-    delete run.events;
-    delete run.failureKind;
-    delete run.recoveryDisposition;
-    delete run.finishedAt;
-    store.saveRun(run);
+    runId: string,
+  ): Promise<DispatchAttempt> => {
+    const claimed = store.claimRunForDispatch(runId, now().toISOString());
+    if (!claimed) {
+      const current = store.getRun(runId);
+      if (!current) throw new Error(`Workflow run ${runId} no longer exists.`);
+      return { dispatched: false, run: current };
+    }
+
+    let run = claimed;
     activeRunIds.add(run.id);
 
     try {
@@ -605,7 +607,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         };
       }
       store.saveRun(run);
-      return clone(run);
+      return { dispatched: true, run: clone(run) };
     } catch (error) {
       const retryable =
         error instanceof WorkflowDispatchError && error.deliveryState === "not-dispatched";
@@ -617,7 +619,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         recoveryDisposition: retryable ? "retryable" : "manual",
       };
       store.saveRun(run);
-      return clone(run);
+      return { dispatched: true, run: clone(run) };
     } finally {
       activeRunIds.delete(run.id);
     }
@@ -652,6 +654,26 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     return clone(existing);
   };
 
+  const createQueuedRun = (
+    definition: WorkflowDefinition,
+    input: StartWorkflowRunInput,
+  ): WorkflowRunRecord => {
+    const id = createId();
+    return {
+      id,
+      workflowId: definition.workflowId,
+      workflowVersion: definition.version,
+      workflowDigest: definition.digest,
+      ...(input.triggerId ? { triggerId: input.triggerId } : {}),
+      idempotencyKey: input.idempotencyKey ?? `run:${id}`,
+      status: "queued",
+      dispatchAttempts: 0,
+      input: clone(input.input ?? {}),
+      context: clone(input.context ?? {}),
+      createdAt: now().toISOString(),
+    };
+  };
+
   const startRun = async (input: StartWorkflowRunInput): Promise<WorkflowRunRecord> => {
     const definition = resolveDefinition(input.workflowId, input.workflowVersion);
     const runInput = clone(input.input ?? {});
@@ -668,21 +690,11 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       if (existing) return existing;
     }
 
-    const id = createId();
-    const idempotencyKey = input.idempotencyKey ?? `run:${id}`;
-    const run: WorkflowRunRecord = {
-      id,
-      workflowId: definition.workflowId,
-      workflowVersion: definition.version,
-      workflowDigest: definition.digest,
-      ...(input.triggerId ? { triggerId: input.triggerId } : {}),
-      idempotencyKey,
-      status: "queued",
-      dispatchAttempts: 0,
+    const run = createQueuedRun(definition, {
+      ...input,
       input: runInput,
       context,
-      createdAt: now().toISOString(),
-    };
+    });
 
     try {
       store.saveRun(run);
@@ -703,7 +715,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       throw error;
     }
 
-    return dispatchRun(definition, run);
+    return (await dispatchRun(definition, run.id)).run;
   };
 
   const recoverRuns = async (): Promise<WorkflowRecoveryResult> => {
@@ -711,36 +723,23 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     const ambiguous: WorkflowRunRecord[] = [];
 
     for (const persisted of store.listRuns()) {
-      if (persisted.status === "queued") {
-        recovered.push(await dispatchRun(definitionForRun(persisted), persisted));
+      if (
+        persisted.status === "queued" ||
+        (persisted.status === "interrupted" && persisted.recoveryDisposition === "retryable")
+      ) {
+        const attempt = await dispatchRun(definitionForRun(persisted), persisted.id);
+        if (attempt.dispatched) recovered.push(attempt.run);
         continue;
       }
 
       if (persisted.status === "running") {
         if (activeRunIds.has(persisted.id)) continue;
-
-        const interrupted: WorkflowRunRecord = {
-          ...persisted,
-          status: "interrupted",
-          error: {
-            code: "ENGINE_RESTARTED_DURING_RUN",
-            message:
-              "The engine recovered a run that was already marked running; execution outcome is unknown.",
-          },
-          failureKind: "dispatch",
-          recoveryDisposition: "manual",
-        };
-        store.saveRun(interrupted);
-        ambiguous.push(clone(interrupted));
+        ambiguous.push(clone(persisted));
         continue;
       }
 
       if (persisted.status === "interrupted") {
-        if (persisted.recoveryDisposition === "retryable") {
-          recovered.push(await dispatchRun(definitionForRun(persisted), persisted));
-        } else {
-          ambiguous.push(clone(persisted));
-        }
+        ambiguous.push(clone(persisted));
       }
     }
 
@@ -853,21 +852,21 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
           scheduledAt,
           idempotencyKey: scheduleIdempotencyKey(trigger.id, scheduledAt),
         };
-        if (!store.claimSchedule(claim)) {
+        const definition = resolveDefinition(trigger.workflowId, trigger.workflowVersion);
+        const queuedRun = createQueuedRun(definition, {
+          workflowId: trigger.workflowId,
+          ...(trigger.workflowVersion === undefined
+            ? {}
+            : { workflowVersion: trigger.workflowVersion }),
+          triggerId: trigger.id,
+          idempotencyKey: claim.idempotencyKey,
+          input: { scheduledAt },
+        });
+        if (!store.claimScheduleRun(claim, queuedRun)) {
           continue;
         }
 
-        runs.push(
-          await startRun({
-            workflowId: trigger.workflowId,
-            ...(trigger.workflowVersion === undefined
-              ? {}
-              : { workflowVersion: trigger.workflowVersion }),
-            triggerId: trigger.id,
-            idempotencyKey: claim.idempotencyKey,
-            input: { scheduledAt },
-          }),
-        );
+        runs.push((await dispatchRun(definition, queuedRun.id)).run);
       }
       return runs;
     },
