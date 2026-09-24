@@ -428,3 +428,52 @@ test("reconciles a concurrent start that already claimed the same idempotency ke
   assert.equal(dispatches, 0);
   assert.equal(engine.listRuns().length, 1);
 });
+
+
+test("concurrent recovery claims a queued run for dispatch only once", async () => {
+  const store = createInMemoryWorkflowEngineStore();
+  const setup = createWorkflowEngine({
+    store,
+    dispatcher: createDispatcher(),
+  });
+  const definition = setup.registerWorkflow({ workflowId: "recover-once", workflow });
+  store.saveRun({
+    id: "queued-recovery",
+    workflowId: definition.workflowId,
+    workflowVersion: definition.version,
+    workflowDigest: definition.digest,
+    idempotencyKey: "recovery:once",
+    status: "queued",
+    dispatchAttempts: 0,
+    input: { sourceId: "source-1" },
+    context: {},
+    createdAt: "2026-09-24T03:00:00.000Z",
+  });
+
+  let releaseDispatch: (() => void) | undefined;
+  const dispatchGate = new Promise<void>((resolve) => {
+    releaseDispatch = resolve;
+  });
+  let dispatches = 0;
+  const dispatcher: WorkflowRunDispatcher = {
+    async dispatch() {
+      dispatches += 1;
+      await dispatchGate;
+      return { status: "succeeded", output: { ok: true } };
+    },
+  };
+  const engineA = createWorkflowEngine({ store, dispatcher });
+  const engineB = createWorkflowEngine({ store, dispatcher });
+
+  const recoveryA = engineA.recoverRuns();
+  await Promise.resolve();
+  const recoveryB = engineB.recoverRuns();
+  await Promise.resolve();
+
+  assert.equal(dispatches, 1);
+  releaseDispatch?.();
+
+  const [resultA, resultB] = await Promise.all([recoveryA, recoveryB]);
+  assert.equal(resultA.recovered.length + resultB.recovered.length, 1);
+  assert.equal(store.getRun("queued-recovery")?.status, "succeeded");
+});
