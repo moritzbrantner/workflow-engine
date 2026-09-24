@@ -286,8 +286,12 @@ test("restart marks a previously running dispatch as ambiguous instead of replay
     assert.equal(redispatches, 0);
     assert.equal(recovery.recovered.length, 0);
     assert.equal(recovery.ambiguous.length, 1);
-    assert.equal(recovery.ambiguous[0]?.status, "interrupted");
-    assert.equal(recovery.ambiguous[0]?.recoveryDisposition, "manual");
+    assert.equal(recovery.ambiguous[0]?.status, "running");
+    assert.equal(
+      restarted.getRun("run-interrupted")?.status,
+      "running",
+      "recovery must not mutate a possibly-active dispatch owned by another engine",
+    );
 
     const secondRecovery = await restarted.recoverRuns();
     assert.equal(secondRecovery.recovered.length, 0);
