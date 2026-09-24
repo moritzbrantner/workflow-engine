@@ -75,6 +75,28 @@ function defineStoreConformance(name: string, factory: StoreFactory): void {
       assert.equal(fixture.store.claimSchedule(claim), true);
       assert.equal(fixture.store.claimSchedule(claim), false);
 
+      const scheduledClaim = {
+        triggerId: "trigger",
+        scheduledAt: "2026-09-24T01:06:00.000Z",
+        idempotencyKey: "schedule:run",
+      };
+      const scheduledRun: WorkflowRunRecord = {
+        id: "scheduled-run",
+        workflowId: "conformance",
+        workflowVersion: 1,
+        workflowDigest: digest,
+        triggerId: "trigger",
+        idempotencyKey: scheduledClaim.idempotencyKey,
+        status: "queued",
+        dispatchAttempts: 0,
+        input: { scheduledAt: scheduledClaim.scheduledAt },
+        context: {},
+        createdAt: "2026-09-24T01:06:00.000Z",
+      };
+      assert.equal(fixture.store.claimScheduleRun(scheduledClaim, scheduledRun), true);
+      assert.equal(fixture.store.claimScheduleRun(scheduledClaim, scheduledRun), false);
+      assert.equal(fixture.store.getRun("scheduled-run")?.status, "queued");
+
       const queued: WorkflowRunRecord = {
         id: "run",
         workflowId: "conformance",
@@ -89,13 +111,13 @@ function defineStoreConformance(name: string, factory: StoreFactory): void {
         createdAt: "2026-09-24T01:05:00.000Z",
       };
       fixture.store.saveRun(queued);
-      const running: WorkflowRunRecord = {
-        ...queued,
-        status: "running",
-        dispatchAttempts: 1,
-        startedAt: "2026-09-24T01:05:01.000Z",
-      };
-      fixture.store.saveRun(running);
+      const running = fixture.store.claimRunForDispatch(
+        queued.id,
+        "2026-09-24T01:05:01.000Z",
+      );
+      assert.equal(running?.status, "running");
+      assert.equal(running?.dispatchAttempts, 1);
+      assert.ok(running);
       const succeeded: WorkflowRunRecord = {
         ...running,
         status: "succeeded",
