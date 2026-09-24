@@ -483,29 +483,48 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     return definition;
   };
 
-  type StartWorkflowRunInternalInput = StartWorkflowRunInput & {
-    idempotencyKey?: string;
+  const activeRunIds = new Set<string>();
+
+  const storedError = (error: unknown): unknown => {
+    if (error instanceof WorkflowDispatchError) {
+      return {
+        code: error.code,
+        message: error.message,
+        deliveryState: error.deliveryState,
+      };
+    }
+    if (error instanceof Error) {
+      return { name: error.name, message: error.message };
+    }
+    return clone(error);
   };
 
-  const startRun = async (input: StartWorkflowRunInternalInput): Promise<WorkflowRunRecord> => {
-    const definition = resolveDefinition(input.workflowId, input.workflowVersion);
-    const createdAt = now().toISOString();
-    let run: WorkflowRunRecord = {
-      id: createId(),
-      workflowId: definition.workflowId,
-      workflowVersion: definition.version,
-      workflowDigest: definition.digest,
-      ...(input.triggerId ? { triggerId: input.triggerId } : {}),
-      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-      status: "queued",
-      input: clone(input.input ?? {}),
-      context: clone(input.context ?? {}),
-      createdAt,
-    };
-    store.saveRun(run);
+  const definitionForRun = (run: WorkflowRunRecord): WorkflowDefinition => {
+    const definition = resolveDefinition(run.workflowId, run.workflowVersion);
+    if (definition.digest !== run.workflowDigest) {
+      throw new Error(
+        `Workflow run ${run.id} is bound to digest ${run.workflowDigest}, but registered version ${definition.version} has digest ${definition.digest}.`,
+      );
+    }
+    return definition;
+  };
 
-    run = { ...run, status: "running", startedAt: now().toISOString() };
+  const dispatchRun = async (
+    definition: WorkflowDefinition,
+    current: WorkflowRunRecord,
+  ): Promise<WorkflowRunRecord> => {
+    let run = clone(current);
+    run.status = "running";
+    run.dispatchAttempts += 1;
+    run.startedAt ??= now().toISOString();
+    delete run.output;
+    delete run.error;
+    delete run.events;
+    delete run.failureKind;
+    delete run.recoveryDisposition;
+    delete run.finishedAt;
     store.saveRun(run);
+    activeRunIds.add(run.id);
 
     try {
       const result = await options.dispatcher.dispatch({
@@ -513,7 +532,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         workflow: clone(definition.workflow),
         input: clone(run.input),
         context: clone(run.context),
-        ...(run.idempotencyKey ? { idempotencyKey: run.idempotencyKey } : {}),
+        idempotencyKey: run.idempotencyKey,
       });
       const finishedAt = now().toISOString();
       if (result.status === "succeeded") {
@@ -537,21 +556,110 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
           status: "failed",
           error: clone(result.error),
           ...(result.events ? { events: clone(result.events) } : {}),
+          failureKind: "workflow",
           finishedAt,
         };
       }
       store.saveRun(run);
       return clone(run);
     } catch (error) {
+      const retryable =
+        error instanceof WorkflowDispatchError && error.deliveryState === "not-dispatched";
       run = {
         ...run,
-        status: "failed",
-        error: clone(error),
-        finishedAt: now().toISOString(),
+        status: "interrupted",
+        error: storedError(error),
+        failureKind: "dispatch",
+        recoveryDisposition: retryable ? "retryable" : "manual",
       };
       store.saveRun(run);
       return clone(run);
+    } finally {
+      activeRunIds.delete(run.id);
     }
+  };
+
+  const startRun = async (input: StartWorkflowRunInput): Promise<WorkflowRunRecord> => {
+    const definition = resolveDefinition(input.workflowId, input.workflowVersion);
+    const runInput = clone(input.input ?? {});
+    const context = clone(input.context ?? {});
+
+    if (input.idempotencyKey) {
+      const existing = store.getRunByIdempotencyKey(input.idempotencyKey);
+      if (existing) {
+        const matches =
+          existing.workflowId === definition.workflowId &&
+          existing.workflowVersion === definition.version &&
+          existing.workflowDigest === definition.digest &&
+          existing.triggerId === input.triggerId &&
+          isDeepStrictEqual(existing.input, runInput) &&
+          isDeepStrictEqual(existing.context, context);
+        if (!matches) {
+          throw new WorkflowRunIdempotencyConflictError(input.idempotencyKey);
+        }
+        return clone(existing);
+      }
+    }
+
+    const id = createId();
+    const idempotencyKey = input.idempotencyKey ?? `run:${id}`;
+    const run: WorkflowRunRecord = {
+      id,
+      workflowId: definition.workflowId,
+      workflowVersion: definition.version,
+      workflowDigest: definition.digest,
+      ...(input.triggerId ? { triggerId: input.triggerId } : {}),
+      idempotencyKey,
+      status: "queued",
+      dispatchAttempts: 0,
+      input: runInput,
+      context,
+      createdAt: now().toISOString(),
+    };
+    store.saveRun(run);
+
+    return dispatchRun(definition, run);
+  };
+
+  const recoverRuns = async (): Promise<WorkflowRecoveryResult> => {
+    const recovered: WorkflowRunRecord[] = [];
+    const ambiguous: WorkflowRunRecord[] = [];
+
+    for (const persisted of store.listRuns()) {
+      if (persisted.status === "queued") {
+        recovered.push(await dispatchRun(definitionForRun(persisted), persisted));
+        continue;
+      }
+
+      if (persisted.status === "running") {
+        if (activeRunIds.has(persisted.id)) continue;
+
+        const interrupted: WorkflowRunRecord = {
+          ...persisted,
+          status: "interrupted",
+          error: {
+            code: "ENGINE_RESTARTED_DURING_RUN",
+            message:
+              "The engine recovered a run that was already marked running; execution outcome is unknown.",
+          },
+          failureKind: "dispatch",
+          recoveryDisposition: "manual",
+        };
+        store.saveRun(interrupted);
+        ambiguous.push(clone(interrupted));
+        continue;
+      }
+
+      if (persisted.status === "interrupted") {
+        if (persisted.recoveryDisposition === "retryable") {
+          recovered.push(await dispatchRun(definitionForRun(persisted), persisted));
+        } else {
+          ambiguous.push(clone(persisted));
+        }
+      }
+    }
+
+    return { recovered, ambiguous };
   };
 
   return {
