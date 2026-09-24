@@ -665,20 +665,33 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
   return {
     registerWorkflow(input) {
       const workflow = assertExecutableWorkflow(input.workflow);
-      const versions = store.listDefinitions(input.workflowId);
       const digest = digestExecutableWorkflow(workflow);
-      const latest = versions.at(-1);
-      if (latest?.digest === digest) return latest;
 
-      const definition: WorkflowDefinition = {
-        workflowId: input.workflowId,
-        version: (latest?.version ?? 0) + 1,
-        digest,
-        workflow: clone(workflow),
-        createdAt: now().toISOString(),
-      };
-      store.saveDefinition(definition);
-      return clone(definition);
+      for (let reservationAttempt = 0; reservationAttempt < 100; reservationAttempt += 1) {
+        const versions = store.listDefinitions(input.workflowId);
+        const existing = versions.find((definition) => definition.digest === digest);
+        if (existing) return clone(existing);
+
+        const latest = versions.at(-1);
+        const definition: WorkflowDefinition = {
+          workflowId: input.workflowId,
+          version: (latest?.version ?? 0) + 1,
+          digest,
+          workflow: clone(workflow),
+          createdAt: now().toISOString(),
+        };
+
+        try {
+          return clone(store.saveDefinition(definition));
+        } catch (error) {
+          if (error instanceof WorkflowDefinitionVersionConflictError) continue;
+          throw error;
+        }
+      }
+
+      throw new Error(
+        `Could not reserve a workflow version for ${input.workflowId} after repeated conflicts.`,
+      );
     },
 
     registerTrigger(input) {
@@ -706,6 +719,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     },
 
     startRun,
+    recoverRuns,
 
     async handleWebhook(request) {
       const method = (request.method ?? "POST").toUpperCase();
