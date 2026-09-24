@@ -1,6 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
+import { assertWorkflowRunTransition } from "./run-state.js";
+import {
+  WorkflowDefinitionVersionConflictError,
+  WorkflowRunIdempotencyConflictError,
+} from "./store-errors.js";
 import { assertExecutableWorkflow } from "./validation.js";
+
+export { createFileWorkflowEngineStore } from "./file-store.js";
+export { InvalidWorkflowRunTransitionError } from "./run-state.js";
+export {
+  WorkflowDefinitionVersionConflictError,
+  WorkflowRunIdempotencyConflictError,
+} from "./store-errors.js";
 
 export {
   InvalidExecutableWorkflowError,
@@ -46,7 +59,7 @@ export type WorkflowRunDispatchRequest = {
   workflow: ExecutableWorkflow;
   input?: Record<string, unknown>;
   context?: Record<string, unknown>;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 };
 
 export type WorkflowRunDispatchResult =
@@ -57,6 +70,19 @@ export type WorkflowRunDispatchResult =
 export type WorkflowRunDispatcher = {
   dispatch(request: WorkflowRunDispatchRequest): Promise<WorkflowRunDispatchResult>;
 };
+
+export type WorkflowDispatchDeliveryState = "not-dispatched" | "unknown";
+
+export class WorkflowDispatchError extends Error {
+  readonly code = "WORKFLOW_DISPATCH_ERROR" as const;
+  readonly deliveryState: WorkflowDispatchDeliveryState;
+
+  constructor(message: string, deliveryState: WorkflowDispatchDeliveryState) {
+    super(message);
+    this.name = "WorkflowDispatchError";
+    this.deliveryState = deliveryState;
+  }
+}
 
 export type WorkflowDefinition = {
   workflowId: string;
@@ -99,7 +125,16 @@ export type WorkflowTriggerInput =
       method?: string;
     });
 
-export type WorkflowRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type WorkflowRunStatus =
+  | "queued"
+  | "running"
+  | "interrupted"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type WorkflowRunFailureKind = "workflow" | "dispatch";
+export type WorkflowRunRecoveryDisposition = "retryable" | "manual";
 
 export type WorkflowScheduleClaim = {
   triggerId: string;
@@ -113,20 +148,28 @@ export type WorkflowRunRecord = {
   workflowVersion: number;
   workflowDigest: string;
   triggerId?: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
   status: WorkflowRunStatus;
+  dispatchAttempts: number;
   input: Record<string, unknown>;
   context: Record<string, unknown>;
   output?: unknown;
   error?: unknown;
   events?: readonly unknown[];
+  failureKind?: WorkflowRunFailureKind;
+  recoveryDisposition?: WorkflowRunRecoveryDisposition;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
 };
 
 export type WorkflowEngineStore = {
-  saveDefinition(definition: WorkflowDefinition): void;
+  /**
+   * Atomically reserves one workflow version.
+   * Returns the persisted definition when the same version/digest already exists and throws
+   * WorkflowDefinitionVersionConflictError when the version is occupied by different content.
+   */
+  saveDefinition(definition: WorkflowDefinition): WorkflowDefinition;
   listDefinitions(workflowId: string): WorkflowDefinition[];
   saveTrigger(trigger: WorkflowTrigger): void;
   getTrigger(triggerId: string): WorkflowTrigger | undefined;
@@ -138,6 +181,7 @@ export type WorkflowEngineStore = {
   claimSchedule(claim: WorkflowScheduleClaim): boolean;
   saveRun(run: WorkflowRunRecord): void;
   getRun(runId: string): WorkflowRunRecord | undefined;
+  getRunByIdempotencyKey(idempotencyKey: string): WorkflowRunRecord | undefined;
   listRuns(): WorkflowRunRecord[];
 };
 
@@ -159,6 +203,12 @@ export type StartWorkflowRunInput = {
   triggerId?: string;
   input?: Record<string, unknown>;
   context?: Record<string, unknown>;
+  idempotencyKey?: string;
+};
+
+export type WorkflowRecoveryResult = {
+  recovered: WorkflowRunRecord[];
+  ambiguous: WorkflowRunRecord[];
 };
 
 export type WebhookRequest = {
@@ -174,6 +224,7 @@ export type WorkflowEngine = {
   registerTrigger(input: WorkflowTriggerInput): WorkflowTrigger;
   fireTrigger(triggerId: string, input?: Record<string, unknown>): Promise<WorkflowRunRecord>;
   startRun(input: StartWorkflowRunInput): Promise<WorkflowRunRecord>;
+  recoverRuns(): Promise<WorkflowRecoveryResult>;
   handleWebhook(request: WebhookRequest): Promise<WorkflowRunRecord[]>;
   tick(now?: Date): Promise<WorkflowRunRecord[]>;
   getRun(runId: string): WorkflowRunRecord | undefined;
