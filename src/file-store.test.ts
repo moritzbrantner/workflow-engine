@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -354,6 +354,70 @@ test("retryable dispatch interruption survives a durable store reopen", async ()
         idempotencyKey: interrupted.idempotencyKey,
       },
     ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("schedule occurrence claim and queued run persist as one durable transaction", () => {
+  const directory = mkdtempSync(join(tmpdir(), "workflow-engine-schedule-transaction-"));
+  const filePath = join(directory, "state.json");
+
+  try {
+    const store = createFileWorkflowEngineStore(filePath);
+    const claim = {
+      triggerId: "cron-trigger",
+      scheduledAt: "2026-09-24T02:00:00.000Z",
+      idempotencyKey: "schedule:atomic",
+    };
+    const run: WorkflowRunRecord = {
+      id: "scheduled-run",
+      workflowId: "demo",
+      workflowVersion: 1,
+      workflowDigest: "digest:1",
+      triggerId: claim.triggerId,
+      idempotencyKey: claim.idempotencyKey,
+      status: "queued",
+      dispatchAttempts: 0,
+      input: { scheduledAt: claim.scheduledAt },
+      context: {},
+      createdAt: "2026-09-24T02:00:00.000Z",
+    };
+
+    assert.equal(store.claimScheduleRun(claim, run), true);
+
+    const reopened = createFileWorkflowEngineStore(filePath);
+    assert.equal(reopened.claimScheduleRun(claim, run), false);
+    assert.deepEqual(reopened.getRun(run.id), run);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("file store reclaims a lock whose recorded owner process no longer exists", () => {
+  const directory = mkdtempSync(join(tmpdir(), "workflow-engine-stale-lock-"));
+  const filePath = join(directory, "state.json");
+  const lockPath = `${filePath}.lock`;
+
+  try {
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999_999, acquiredAt: "2026-09-24T00:00:00.000Z" }),
+      "utf8",
+    );
+    const store = createFileWorkflowEngineStore(filePath);
+
+    const definition = store.saveDefinition({
+      workflowId: "demo",
+      version: 1,
+      digest: digestExecutableWorkflow(workflow),
+      workflow,
+      createdAt: "2026-09-24T02:00:00.000Z",
+    });
+
+    assert.equal(definition.version, 1);
+    assert.equal(existsSync(lockPath), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
