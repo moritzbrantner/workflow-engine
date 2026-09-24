@@ -387,3 +387,44 @@ test("workflow execution failures are terminal and are not recovered", async () 
   assert.equal(failed.failureKind, "workflow");
   assert.deepEqual(await engine.recoverRuns(), { recovered: [], ambiguous: [] });
 });
+
+
+test("reconciles a concurrent start that already claimed the same idempotency key", async () => {
+  const underlying = createInMemoryWorkflowEngineStore();
+  let injectConflict = true;
+  const store = {
+    ...underlying,
+    saveRun(run: Parameters<typeof underlying.saveRun>[0]) {
+      if (injectConflict && run.status === "queued") {
+        injectConflict = false;
+        underlying.saveRun({ ...run, id: "winning-run" });
+        throw new WorkflowRunIdempotencyConflictError(run.idempotencyKey);
+      }
+      return underlying.saveRun(run);
+    },
+  };
+
+  let dispatches = 0;
+  const engine = createWorkflowEngine({
+    store,
+    createId: deterministicIds("losing-run"),
+    dispatcher: {
+      async dispatch() {
+        dispatches += 1;
+        return { status: "succeeded", output: {} };
+      },
+    },
+  });
+  engine.registerWorkflow({ workflowId: "evaluation", workflow });
+
+  const run = await engine.startRun({
+    workflowId: "evaluation",
+    idempotencyKey: "evaluation:concurrent",
+    input: { sourceId: "source-1" },
+  });
+
+  assert.equal(run.id, "winning-run");
+  assert.equal(run.status, "queued");
+  assert.equal(dispatches, 0);
+  assert.equal(engine.listRuns().length, 1);
+});
