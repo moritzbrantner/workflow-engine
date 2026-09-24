@@ -579,26 +579,49 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     }
   };
 
+  const runMatchesRequest = (
+    existing: WorkflowRunRecord,
+    definition: WorkflowDefinition,
+    input: StartWorkflowRunInput,
+    runInput: Record<string, unknown>,
+    context: Record<string, unknown>,
+  ): boolean =>
+    existing.workflowId === definition.workflowId &&
+    existing.workflowVersion === definition.version &&
+    existing.workflowDigest === definition.digest &&
+    existing.triggerId === input.triggerId &&
+    isDeepStrictEqual(existing.input, runInput) &&
+    isDeepStrictEqual(existing.context, context);
+
+  const existingIdempotentRun = (
+    idempotencyKey: string,
+    definition: WorkflowDefinition,
+    input: StartWorkflowRunInput,
+    runInput: Record<string, unknown>,
+    context: Record<string, unknown>,
+  ): WorkflowRunRecord | undefined => {
+    const existing = store.getRunByIdempotencyKey(idempotencyKey);
+    if (!existing) return undefined;
+    if (!runMatchesRequest(existing, definition, input, runInput, context)) {
+      throw new WorkflowRunIdempotencyConflictError(idempotencyKey);
+    }
+    return clone(existing);
+  };
+
   const startRun = async (input: StartWorkflowRunInput): Promise<WorkflowRunRecord> => {
     const definition = resolveDefinition(input.workflowId, input.workflowVersion);
     const runInput = clone(input.input ?? {});
     const context = clone(input.context ?? {});
 
     if (input.idempotencyKey) {
-      const existing = store.getRunByIdempotencyKey(input.idempotencyKey);
-      if (existing) {
-        const matches =
-          existing.workflowId === definition.workflowId &&
-          existing.workflowVersion === definition.version &&
-          existing.workflowDigest === definition.digest &&
-          existing.triggerId === input.triggerId &&
-          isDeepStrictEqual(existing.input, runInput) &&
-          isDeepStrictEqual(existing.context, context);
-        if (!matches) {
-          throw new WorkflowRunIdempotencyConflictError(input.idempotencyKey);
-        }
-        return clone(existing);
-      }
+      const existing = existingIdempotentRun(
+        input.idempotencyKey,
+        definition,
+        input,
+        runInput,
+        context,
+      );
+      if (existing) return existing;
     }
 
     const id = createId();
@@ -616,7 +639,25 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       context,
       createdAt: now().toISOString(),
     };
-    store.saveRun(run);
+
+    try {
+      store.saveRun(run);
+    } catch (error) {
+      if (
+        input.idempotencyKey &&
+        error instanceof WorkflowRunIdempotencyConflictError
+      ) {
+        const existing = existingIdempotentRun(
+          input.idempotencyKey,
+          definition,
+          input,
+          runInput,
+          context,
+        );
+        if (existing) return existing;
+      }
+      throw error;
+    }
 
     return dispatchRun(definition, run);
   };
