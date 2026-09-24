@@ -10,7 +10,10 @@ import {
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import { assertWorkflowRunTransition } from "./run-state.js";
+import {
+  assertWorkflowRunTransition,
+  prepareWorkflowRunForDispatch,
+} from "./run-state.js";
 import {
   WorkflowDefinitionVersionConflictError,
   WorkflowRunIdempotencyConflictError,
@@ -144,6 +147,48 @@ function sleep(milliseconds: number): void {
   Atomics.wait(new Int32Array(buffer), 0, 0, milliseconds);
 }
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (isErrno(error, "ESRCH")) return false;
+    if (isErrno(error, "EPERM")) return true;
+    throw error;
+  }
+}
+
+function reclaimOrphanedLock(lockPath: string): boolean {
+  let owner: unknown;
+  try {
+    owner = JSON.parse(readFileSync(lockPath, "utf8")) as unknown;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return true;
+    return false;
+  }
+
+  if (
+    typeof owner !== "object" ||
+    owner === null ||
+    Array.isArray(owner) ||
+    !("pid" in owner) ||
+    typeof owner.pid !== "number" ||
+    !Number.isSafeInteger(owner.pid) ||
+    owner.pid <= 0 ||
+    processIsAlive(owner.pid)
+  ) {
+    return false;
+  }
+
+  try {
+    unlinkSync(lockPath);
+    return true;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return true;
+    return false;
+  }
+}
+
 function withFileLock<T>(filePath: string, operation: () => T): T {
   mkdirSync(dirname(filePath), { recursive: true });
   const lockPath = `${filePath}.lock`;
@@ -153,8 +198,19 @@ function withFileLock<T>(filePath: string, operation: () => T): T {
   while (lockDescriptor === undefined) {
     try {
       lockDescriptor = openSync(lockPath, "wx", 0o600);
+      writeFileSync(
+        lockDescriptor,
+        `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
+        "utf8",
+      );
     } catch (error) {
-      if (!isErrno(error, "EEXIST") || Date.now() >= deadline) {
+      if (!isErrno(error, "EEXIST")) {
+        throw new Error(`Could not acquire workflow engine store lock ${lockPath}.`, {
+          cause: error,
+        });
+      }
+      if (reclaimOrphanedLock(lockPath)) continue;
+      if (Date.now() >= deadline) {
         throw new Error(`Could not acquire workflow engine store lock ${lockPath}.`, {
           cause: error,
         });
@@ -260,6 +316,34 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
       });
     },
 
+    claimScheduleRun(claim, run) {
+      return mutateState(filePath, (state) => {
+        if (state.scheduleClaims.some((candidate) => sameScheduleClaim(candidate, claim))) {
+          return { value: false, changed: false };
+        }
+        if (
+          run.status !== "queued" ||
+          run.dispatchAttempts !== 0 ||
+          run.triggerId !== claim.triggerId ||
+          run.idempotencyKey !== claim.idempotencyKey
+        ) {
+          throw new Error("Scheduled workflow runs must start queued and match their schedule claim.");
+        }
+
+        const sameKey = state.runs.find(
+          (candidate) => candidate.idempotencyKey === run.idempotencyKey,
+        );
+        if (sameKey && sameKey.id !== run.id) {
+          throw new WorkflowRunIdempotencyConflictError(run.idempotencyKey);
+        }
+        assertWorkflowRunTransition(undefined, run);
+
+        state.scheduleClaims.push(clone(claim));
+        state.runs.push(clone(run));
+        return { value: true, changed: true };
+      });
+    },
+
     saveRun(run) {
       mutateState(filePath, (state) => {
         const sameKey = state.runs.find(
@@ -282,6 +366,21 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
           state.runs.push(clone(run));
         }
         return { value: undefined, changed: true };
+      });
+    },
+
+    claimRunForDispatch(runId, startedAt) {
+      return mutateState(filePath, (state) => {
+        const index = state.runs.findIndex((candidate) => candidate.id === runId);
+        if (index < 0) return { value: undefined, changed: false };
+
+        const current = state.runs[index];
+        if (!current) return { value: undefined, changed: false };
+        const claimed = prepareWorkflowRunForDispatch(current, startedAt);
+        if (!claimed) return { value: undefined, changed: false };
+
+        state.runs[index] = clone(claimed);
+        return { value: clone(claimed), changed: true };
       });
     },
 
