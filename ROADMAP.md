@@ -18,7 +18,7 @@ Status: implemented by #9. The engine ships an atomic local JSON store in additi
 
 ## P1 — Explicit run cancellation and dispatch recovery
 
-Status: dispatch recovery implemented by #10. Every run carries an idempotency key and dispatch-attempt count. Workflow failure is distinct from dispatch interruption; explicitly `not-dispatched` transport failures may be redelivered under the same logical run, while unknown-delivery and recovered `running` records become manual `interrupted` outcomes and are not replayed automatically.
+Status: dispatch recovery implemented by #10. Every run carries an idempotency key and dispatch-attempt count. Workflow failure is distinct from dispatch interruption; explicitly `not-dispatched` transport failures may be redelivered under the same logical run. Unknown-delivery interruptions are manual, while persisted `running` records are surfaced as ambiguous without mutation because another engine may still own the dispatch. Schedule claim + queued-run creation and dispatch acquisition are atomic store operations, preventing crash gaps and duplicate recovery execution.
 
 Remaining slice:
 
