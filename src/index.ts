@@ -246,15 +246,30 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
   return {
     saveDefinition(definition) {
       const versions = definitions.get(definition.workflowId) ?? [];
-      const next = versions.filter((item) => item.version !== definition.version);
-      next.push(clone(definition));
-      next.sort((a, b) => a.version - b.version);
+      const existing = versions.find((item) => item.version === definition.version);
+      if (existing) {
+        if (
+          existing.digest === definition.digest &&
+          isDeepStrictEqual(existing.workflow, definition.workflow)
+        ) {
+          return clone(existing);
+        }
+        throw new WorkflowDefinitionVersionConflictError(
+          definition.workflowId,
+          definition.version,
+        );
+      }
+
+      const next = [...versions, clone(definition)].sort((a, b) => a.version - b.version);
       definitions.set(definition.workflowId, next);
+      return clone(definition);
     },
     listDefinitions(workflowId) {
       return (definitions.get(workflowId) ?? []).map(clone);
     },
     saveTrigger(trigger) {
+      const existing = triggers.get(trigger.id);
+      if (existing && isDeepStrictEqual(existing, trigger)) return;
       triggers.set(trigger.id, clone(trigger));
     },
     getTrigger(triggerId) {
@@ -271,16 +286,35 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       return true;
     },
     saveRun(run) {
+      const sameKey = [...runs.values()].find(
+        (candidate) => candidate.idempotencyKey === run.idempotencyKey,
+      );
+      if (sameKey && sameKey.id !== run.id) {
+        throw new WorkflowRunIdempotencyConflictError(run.idempotencyKey);
+      }
+
+      const previous = runs.get(run.id);
+      assertWorkflowRunTransition(previous, run);
+      if (previous && isDeepStrictEqual(previous, run)) return;
       runs.set(run.id, clone(run));
     },
     getRun(runId) {
       const run = runs.get(runId);
       return run ? clone(run) : undefined;
     },
+    getRunByIdempotencyKey(idempotencyKey) {
+      const run = [...runs.values()].find(
+        (candidate) => candidate.idempotencyKey === idempotencyKey,
+      );
+      return run ? clone(run) : undefined;
+    },
     listRuns() {
       return [...runs.values()]
         .map(clone)
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        .sort(
+          (left, right) =>
+            left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+        );
     },
   };
 }
