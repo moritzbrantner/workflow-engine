@@ -8,7 +8,7 @@ Apply the live coding-agent conventions for TypeScript, repository structure, de
 
 It does not execute workflow nodes itself and must not import executor implementations. Keep the dependency on `workflow-runner` structural through `WorkflowRunDispatcher` so each repository remains independently developable in source mode.
 
-The MVP store is in-memory. Persistence, durable queues, distributed workers, authentication, and deployment are later concerns.
+Stores sit behind the engine-owned `WorkflowEngineStore` seam: an in-memory store and a single-host local JSON file store (`createFileWorkflowEngineStore`) are in scope, and every adapter must pass the shared store conformance tests. Database-backed stores, durable queues, distributed workers, authentication, and deployment are later concerns.
 
 Cron matching is evaluated in UTC and follows standard five-field day-of-month/day-of-week OR semantics when both fields are restricted.
 

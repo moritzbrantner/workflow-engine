@@ -14,19 +14,15 @@ Status: schedule occurrence claims now live behind `WorkflowEngineStore` and are
 
 ## P1 — Durable storage and atomic version registration
 
-- add a persistent store adapter without changing the engine API;
-- make workflow-version allocation atomic under concurrent registration;
-- keep workflow definitions immutable once registered;
-- add store conformance tests that every adapter must pass;
-- make run state transitions monotonic and reject invalid regressions.
+Status: implemented by #9. The engine ships an atomic local JSON store in addition to the in-memory adapter. Definition reservation detects occupied versions and retries allocation without overwriting immutable definitions; schedule claims and run history survive restart; run identity is immutable; terminal state regressions are rejected; restart/idempotency/conflict regressions cover the store boundary.
 
 ## P1 — Explicit run cancellation and dispatch recovery
 
-- add cancellation as an engine-owned run lifecycle operation while runner remains responsible for execution cancellation mechanics;
-- define dispatch idempotency for retried queue delivery;
-- preserve the exact workflow version/digest across retries;
-- distinguish dispatch transport failure from workflow execution failure;
-- support recovery of runs left in queued/running states after process interruption.
+Status: dispatch recovery implemented by #10. Every run carries an idempotency key and dispatch-attempt count. Workflow failure is distinct from dispatch interruption; explicitly `not-dispatched` transport failures may be redelivered under the same logical run. Unknown-delivery interruptions are manual, while persisted `running` records are surfaced as ambiguous without mutation because another engine may still own the dispatch. Schedule claim + queued-run creation and dispatch acquisition are atomic store operations, preventing crash gaps and duplicate recovery execution.
+
+Remaining slice:
+
+- add cancellation as an engine-owned run lifecycle operation while runner remains responsible for execution cancellation mechanics.
 
 ## P1 — Queue-backed dispatcher adapter
 
