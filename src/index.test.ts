@@ -457,6 +457,25 @@ test("rejects non-JSON workflow values before digest deduplication", () => {
   );
 });
 
+test("stores and returns an undefined dispatcher output as an absent field", async () => {
+  const store = createInMemoryWorkflowEngineStore();
+  const engine = createWorkflowEngine({
+    store,
+    createId: deterministicIds("undefined-output"),
+    dispatcher: {
+      async dispatch() {
+        return { status: "succeeded", output: undefined };
+      },
+    },
+  });
+  engine.registerWorkflow({ workflowId: "evaluation", workflow });
+  const run = await engine.startRun({ workflowId: "evaluation" });
+
+  assert.equal(run.status, "succeeded");
+  assert.equal(Object.hasOwn(run, "output"), false);
+  assert.deepEqual(engine.getRun(run.id), run);
+});
+
 test("parks a non-JSON dispatcher result as a manual interruption instead of altering it", async () => {
   const store = createInMemoryWorkflowEngineStore();
   let dispatches = 0;

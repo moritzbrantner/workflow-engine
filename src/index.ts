@@ -5,9 +5,15 @@ import {
   assertWorkflowRunTransition,
   prepareWorkflowRunForDispatch,
 } from "./run-state.js";
-import { assertJsonSafe, assertOptionalJsonSafe, assertStorableRecord } from "./json-value.js";
+import {
+  assertJsonSafe,
+  assertOptionalJsonSafe,
+  assertStorableRecord,
+  withoutUndefinedFields,
+} from "./json-value.js";
 import {
   WorkflowDefinitionVersionConflictError,
+  WorkflowRunIdConflictError,
   WorkflowRunIdempotencyConflictError,
   WorkflowValueNotJsonSafeError,
 } from "./store-errors.js";
@@ -17,6 +23,7 @@ export { createFileWorkflowEngineStore } from "./file-store.js";
 export { InvalidWorkflowRunTransitionError } from "./run-state.js";
 export {
   WorkflowDefinitionVersionConflictError,
+  WorkflowRunIdConflictError,
   WorkflowRunIdempotencyConflictError,
   WorkflowValueNotJsonSafeError,
 } from "./store-errors.js";
@@ -276,9 +283,10 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
         );
       }
 
-      const next = [...versions, clone(definition)].sort((a, b) => a.version - b.version);
+      const stored = withoutUndefinedFields(definition);
+      const next = [...versions, clone(stored)].sort((a, b) => a.version - b.version);
       definitions.set(definition.workflowId, next);
-      return clone(definition);
+      return clone(stored);
     },
     listDefinitions(workflowId) {
       return (definitions.get(workflowId) ?? []).map(clone);
@@ -287,7 +295,7 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       assertStorableRecord(trigger, "trigger");
       const existing = triggers.get(trigger.id);
       if (existing && isDeepStrictEqual(existing, trigger)) return;
-      triggers.set(trigger.id, clone(trigger));
+      triggers.set(trigger.id, clone(withoutUndefinedFields(trigger)));
     },
     getTrigger(triggerId) {
       const trigger = triggers.get(triggerId);
@@ -308,6 +316,7 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       assertStorableRecord(run, "run");
       const key = JSON.stringify([claim.triggerId, claim.scheduledAt]);
       if (scheduleClaims.has(key)) return false;
+      if (runs.has(run.id)) throw new WorkflowRunIdConflictError(run.id);
       if (
         run.status !== "queued" ||
         run.dispatchAttempts !== 0 ||
@@ -326,7 +335,7 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       assertWorkflowRunTransition(undefined, run);
 
       scheduleClaims.add(key);
-      runs.set(run.id, clone(run));
+      runs.set(run.id, clone(withoutUndefinedFields(run)));
       return true;
     },
     saveRun(run) {
@@ -340,8 +349,9 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
 
       const previous = runs.get(run.id);
       assertWorkflowRunTransition(previous, run);
-      if (previous && isDeepStrictEqual(previous, run)) return;
-      runs.set(run.id, clone(run));
+      const stored = withoutUndefinedFields(run);
+      if (previous && isDeepStrictEqual(previous, stored)) return;
+      runs.set(run.id, clone(stored));
     },
     claimRunForDispatch(runId, startedAt) {
       const current = runs.get(runId);
@@ -642,6 +652,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     }
 
     try {
+      run = withoutUndefinedFields(run);
       store.saveRun(run);
       return { dispatched: true, run: clone(run) };
     } finally {

@@ -10,6 +10,7 @@ import {
   digestExecutableWorkflow,
   InvalidWorkflowRunTransitionError,
   WorkflowDefinitionVersionConflictError,
+  WorkflowRunIdConflictError,
   WorkflowRunIdempotencyConflictError,
   WorkflowValueNotJsonSafeError,
   type ExecutableWorkflow,
@@ -193,6 +194,35 @@ function defineStoreConformance(name: string, factory: StoreFactory): void {
       );
 
       assert.deepEqual(fixture.reopen().getRun("json-run")?.input, queued.input);
+
+      fixture.store.saveRun({
+        ...running,
+        status: "succeeded",
+        output: undefined,
+        finishedAt: "2026-09-24T01:00:02.000Z",
+      });
+      for (const store of [fixture.store, fixture.reopen()]) {
+        const stored = store.getRun("json-run");
+        assert.equal(stored?.status, "succeeded");
+        assert.equal(Object.hasOwn(stored ?? {}, "output"), false);
+      }
+
+      const claim = {
+        triggerId: "trigger",
+        scheduledAt: "2026-09-24T01:01:00.000Z",
+        idempotencyKey: "schedule:trigger:2026-09-24T01:01:00.000Z",
+      };
+      assert.throws(
+        () =>
+          fixture.store.claimScheduleRun(claim, {
+            ...queued,
+            triggerId: "trigger",
+            idempotencyKey: claim.idempotencyKey,
+          }),
+        WorkflowRunIdConflictError,
+      );
+      assert.equal(fixture.reopen().getRun("json-run")?.status, "succeeded");
+      assert.equal(fixture.reopen().claimSchedule(claim), true, "a rejected claim must not commit");
     } finally {
       fixture.cleanup();
     }

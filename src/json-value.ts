@@ -95,11 +95,19 @@ export function assertOptionalJsonSafe(value: unknown, path: string): void {
 
 /**
  * Store records must survive JSON persistence unchanged, so every adapter rejects values JSON
- * would silently alter (nested undefined, NaN, class instances, ...). Top-level undefined fields
- * mean an absent optional field and round-trip unchanged.
+ * would silently alter (nested undefined, NaN, class instances, ...). A top-level field set to
+ * undefined is treated as absent; adapters store records through withoutUndefinedFields so the
+ * present-but-undefined and absent cases read back identically.
  */
 export function assertStorableRecord(record: object, kind: string): void {
   for (const [field, value] of Object.entries(record)) {
     assertOptionalJsonSafe(value, `${kind}.${field}`);
   }
+}
+
+/** Copies a record without its top-level undefined fields, matching what JSON persistence keeps. */
+export function withoutUndefinedFields<T extends object>(record: T): T {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== undefined),
+  ) as T;
 }

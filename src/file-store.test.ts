@@ -506,3 +506,39 @@ test("file store reclaims a stale lock only through its per-instance reclaim mar
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("file store reclaims a lock whose pid was reused by a different process incarnation", {
+  skip: !existsSync("/proc/self/stat"),
+}, () => {
+  const directory = mkdtempSync(join(tmpdir(), "workflow-engine-pid-reuse-"));
+  const filePath = join(directory, "state.json");
+  const lockPath = `${filePath}.lock`;
+
+  try {
+    // The recorded pid is alive (this process), but its start time belongs to an earlier process.
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        startTime: "1",
+        acquiredAt: "2026-09-24T00:00:00.000Z",
+        token: "previous-incarnation",
+      }),
+      "utf8",
+    );
+    const store = createFileWorkflowEngineStore(filePath);
+
+    const definition = store.saveDefinition({
+      workflowId: "demo",
+      version: 1,
+      digest: digestExecutableWorkflow(workflow),
+      workflow,
+      createdAt: "2026-09-24T02:00:00.000Z",
+    });
+
+    assert.equal(definition.version, 1);
+    assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

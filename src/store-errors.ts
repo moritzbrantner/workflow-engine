@@ -34,3 +34,14 @@ export class WorkflowValueNotJsonSafeError extends Error {
     this.reason = reason;
   }
 }
+
+export class WorkflowRunIdConflictError extends Error {
+  readonly code = "WORKFLOW_RUN_ID_CONFLICT" as const;
+  readonly runId: string;
+
+  constructor(runId: string) {
+    super(`Workflow run ${runId} already exists.`);
+    this.name = "WorkflowRunIdConflictError";
+    this.runId = runId;
+  }
+}

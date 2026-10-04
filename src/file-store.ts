@@ -11,13 +11,17 @@ import {
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import { assertStorableRecord as assertStorable } from "./json-value.js";
+import {
+  assertStorableRecord as assertStorable,
+  withoutUndefinedFields,
+} from "./json-value.js";
 import {
   assertWorkflowRunTransition,
   prepareWorkflowRunForDispatch,
 } from "./run-state.js";
 import {
   WorkflowDefinitionVersionConflictError,
+  WorkflowRunIdConflictError,
   WorkflowRunIdempotencyConflictError,
 } from "./store-errors.js";
 import type {
@@ -160,6 +164,29 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Kernel start time of a process (Linux /proc/<pid>/stat field 22), which distinguishes process
+ * incarnations that reuse a pid, e.g. a restarted container whose writer is pid 1 again.
+ * Returns undefined where /proc is unavailable; liveness then falls back to the pid alone.
+ */
+function processStartTime(pid: number | "self"): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // Fields after the parenthesised command name start at field 3 (state).
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return fields[19] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function lockOwnerIsAlive(pid: number, startTime: unknown): boolean {
+  if (!processIsAlive(pid)) return false;
+  if (typeof startTime !== "string") return true;
+  const current = processStartTime(pid);
+  return current === undefined || current === startTime;
+}
+
 type ObservedLockOwner = { raw: string; pid: number } | "missing" | "held";
 
 function observeLockOwner(lockPath: string): ObservedLockOwner {
@@ -185,7 +212,7 @@ function observeLockOwner(lockPath: string): ObservedLockOwner {
     typeof owner.pid !== "number" ||
     !Number.isSafeInteger(owner.pid) ||
     owner.pid <= 0 ||
-    processIsAlive(owner.pid)
+    lockOwnerIsAlive(owner.pid, "startTime" in owner ? owner.startTime : undefined)
   ) {
     return "held";
   }
@@ -268,6 +295,7 @@ function publishLock(lockPath: string): void {
     ownerPath,
     `${JSON.stringify({
       pid: process.pid,
+      startTime: processStartTime("self"),
       acquiredAt: new Date().toISOString(),
       token: randomUUID(),
     })}\n`,
@@ -356,8 +384,9 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
           );
         }
 
-        state.definitions.push(clone(definition));
-        return { value: clone(definition), changed: true };
+        const stored = withoutUndefinedFields(definition);
+        state.definitions.push(clone(stored));
+        return { value: clone(stored), changed: true };
       });
     },
 
@@ -411,6 +440,9 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
       return mutateState(filePath, (state) => {
         if (state.scheduleClaims.some((candidate) => sameScheduleClaim(candidate, claim))) {
           return { value: false, changed: false };
+        }
+        if (state.runs.some((candidate) => candidate.id === run.id)) {
+          throw new WorkflowRunIdConflictError(run.id);
         }
         if (
           run.status !== "queued" ||
