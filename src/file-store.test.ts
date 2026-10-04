@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -418,6 +418,42 @@ test("file store reclaims a lock whose recorded owner process no longer exists",
 
     assert.equal(definition.version, 1);
     assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("file store publishes lock ownership atomically and ignores crashed owner drafts", () => {
+  const directory = mkdtempSync(join(tmpdir(), "workflow-engine-lock-owner-"));
+  const filePath = join(directory, "state.json");
+  const lockPath = `${filePath}.lock`;
+
+  try {
+    // A publisher killed before linking its owner record leaves only a private draft behind.
+    writeFileSync(`${lockPath}.999999.1.owner`, "", "utf8");
+    const store = createFileWorkflowEngineStore(filePath);
+
+    store.saveDefinition({
+      workflowId: "demo",
+      version: 1,
+      digest: digestExecutableWorkflow(workflow),
+      workflow,
+      createdAt: "2026-09-24T02:00:00.000Z",
+    });
+    store.saveDefinition({
+      workflowId: "demo",
+      version: 2,
+      digest: digestExecutableWorkflow(changedWorkflow()),
+      workflow: changedWorkflow(),
+      createdAt: "2026-09-24T02:01:00.000Z",
+    });
+
+    assert.equal(existsSync(lockPath), false);
+    assert.deepEqual(
+      readdirSync(directory).filter((entry) => entry.endsWith(".owner") && !entry.includes("999999")),
+      [],
+      "successful lock publication must not leave owner drafts behind",
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

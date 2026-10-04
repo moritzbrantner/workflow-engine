@@ -7,6 +7,7 @@ import {
   matchesCron,
   WorkflowDispatchError,
   WorkflowRunIdempotencyConflictError,
+  WorkflowValueNotJsonSafeError,
   type ExecutableWorkflow,
   type WorkflowRunDispatchRequest,
   type WorkflowRunDispatcher,
@@ -388,6 +389,62 @@ test("workflow execution failures are terminal and are not recovered", async () 
   assert.deepEqual(await engine.recoverRuns(), { recovered: [], ambiguous: [] });
 });
 
+
+test("rejects run input that durable stores could not persist unchanged", async () => {
+  const store = createInMemoryWorkflowEngineStore();
+  let dispatches = 0;
+  const engine = createWorkflowEngine({
+    store,
+    createId: deterministicIds("json-input"),
+    dispatcher: {
+      async dispatch() {
+        dispatches += 1;
+        return { status: "succeeded", output: {} };
+      },
+    },
+  });
+  engine.registerWorkflow({ workflowId: "evaluation", workflow });
+
+  await assert.rejects(
+    engine.startRun({ workflowId: "evaluation", input: { value: undefined } }),
+    WorkflowValueNotJsonSafeError,
+  );
+  await assert.rejects(
+    engine.startRun({ workflowId: "evaluation", context: { score: Number.NaN } }),
+    WorkflowValueNotJsonSafeError,
+  );
+  assert.equal(dispatches, 0);
+  assert.deepEqual(engine.listRuns(), []);
+});
+
+test("parks a non-JSON dispatcher result as a manual interruption instead of altering it", async () => {
+  const store = createInMemoryWorkflowEngineStore();
+  let dispatches = 0;
+  const engine = createWorkflowEngine({
+    store,
+    createId: deterministicIds("json-result"),
+    dispatcher: {
+      async dispatch() {
+        dispatches += 1;
+        return { status: "failed", error: new Error("model rejected") };
+      },
+    },
+  });
+  engine.registerWorkflow({ workflowId: "evaluation", workflow });
+  const run = await engine.startRun({ workflowId: "evaluation" });
+
+  assert.equal(run.status, "interrupted");
+  assert.equal(run.failureKind, "dispatch");
+  assert.equal(run.recoveryDisposition, "manual");
+  assert.equal((run.error as { code?: string }).code, "WORKFLOW_VALUE_NOT_JSON_SAFE");
+  assert.equal((run.error as { path?: string }).path, "error");
+  assert.deepEqual(engine.getRun(run.id), run);
+
+  const recovery = await engine.recoverRuns();
+  assert.equal(recovery.recovered.length, 0);
+  assert.equal(recovery.ambiguous.length, 1);
+  assert.equal(dispatches, 1);
+});
 
 test("reconciles a concurrent start that already claimed the same idempotency key", async () => {
   const underlying = createInMemoryWorkflowEngineStore();

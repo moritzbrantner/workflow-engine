@@ -11,6 +11,7 @@ import {
   InvalidWorkflowRunTransitionError,
   WorkflowDefinitionVersionConflictError,
   WorkflowRunIdempotencyConflictError,
+  WorkflowValueNotJsonSafeError,
   type ExecutableWorkflow,
   type WorkflowEngineStore,
   type WorkflowRunRecord,
@@ -142,6 +143,56 @@ function defineStoreConformance(name: string, factory: StoreFactory): void {
       assert.equal(reopened.getTrigger("trigger")?.id, "trigger");
       assert.equal(reopened.claimSchedule(claim), false);
       assert.equal(reopened.getRun("run")?.status, "succeeded");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test(`${name}: rejects values JSON persistence would change and round-trips JSON exactly`, () => {
+    const fixture = factory();
+    try {
+      const queued: WorkflowRunRecord = {
+        id: "json-run",
+        workflowId: "conformance",
+        workflowVersion: 1,
+        workflowDigest: digestExecutableWorkflow(workflow),
+        idempotencyKey: "run:json",
+        status: "queued",
+        dispatchAttempts: 0,
+        input: { nested: { list: [1, "two", null, false], empty: {} } },
+        context: {},
+        createdAt: "2026-09-24T01:00:00.000Z",
+      };
+
+      for (const input of [
+        { value: undefined },
+        { value: Number.NaN },
+        { value: new Date(0) },
+        { value: [1, , 3] },
+        { value: 1n },
+      ]) {
+        assert.throws(
+          () => fixture.store.saveRun({ ...queued, input: input as Record<string, unknown> }),
+          WorkflowValueNotJsonSafeError,
+        );
+      }
+      assert.equal(fixture.store.getRun("json-run"), undefined);
+
+      fixture.store.saveRun(queued);
+      const running = fixture.store.claimRunForDispatch("json-run", "2026-09-24T01:00:01.000Z");
+      assert.ok(running);
+      assert.throws(
+        () =>
+          fixture.store.saveRun({
+            ...running,
+            status: "failed",
+            error: new Error("lost diagnostics"),
+            failureKind: "workflow",
+          }),
+        WorkflowValueNotJsonSafeError,
+      );
+
+      assert.deepEqual(fixture.reopen().getRun("json-run")?.input, queued.input);
     } finally {
       fixture.cleanup();
     }

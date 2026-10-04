@@ -1,7 +1,6 @@
 import {
-  closeSync,
+  linkSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -10,6 +9,7 @@ import {
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
+import { assertStorableRecord as assertStorable } from "./json-value.js";
 import {
   assertWorkflowRunTransition,
   prepareWorkflowRunForDispatch,
@@ -189,20 +189,39 @@ function reclaimOrphanedLock(lockPath: string): boolean {
   }
 }
 
+let lockOwnerSequence = 0;
+
+/**
+ * Publishes the lock with its ownership record already complete: the owner JSON is written to
+ * a private file first and then hard-linked into place, which fails atomically with EEXIST when
+ * the lock is held. A crash can leave only a private owner file behind, never a lock whose owner
+ * cannot be determined.
+ */
+function publishLock(lockPath: string): void {
+  lockOwnerSequence += 1;
+  const ownerPath = `${lockPath}.${process.pid}.${lockOwnerSequence}.owner`;
+  writeFileSync(
+    ownerPath,
+    `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
+    { encoding: "utf8", mode: 0o600, flag: "wx" },
+  );
+  try {
+    linkSync(ownerPath, lockPath);
+  } finally {
+    unlinkSync(ownerPath);
+  }
+}
+
 function withFileLock<T>(filePath: string, operation: () => T): T {
   mkdirSync(dirname(filePath), { recursive: true });
   const lockPath = `${filePath}.lock`;
   const deadline = Date.now() + LOCK_TIMEOUT_MILLISECONDS;
-  let lockDescriptor: number | undefined;
+  let acquired = false;
 
-  while (lockDescriptor === undefined) {
+  while (!acquired) {
     try {
-      lockDescriptor = openSync(lockPath, "wx", 0o600);
-      writeFileSync(
-        lockDescriptor,
-        `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
-        "utf8",
-      );
+      publishLock(lockPath);
+      acquired = true;
     } catch (error) {
       if (!isErrno(error, "EEXIST")) {
         throw new Error(`Could not acquire workflow engine store lock ${lockPath}.`, {
@@ -222,7 +241,6 @@ function withFileLock<T>(filePath: string, operation: () => T): T {
   try {
     return operation();
   } finally {
-    closeSync(lockDescriptor);
     unlinkSync(lockPath);
   }
 }
@@ -250,6 +268,7 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
 
   return {
     saveDefinition(definition) {
+      assertStorable(definition, "definition");
       return mutateState(filePath, (state) => {
         const existing = state.definitions.find(
           (candidate) =>
@@ -282,6 +301,7 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
     },
 
     saveTrigger(trigger) {
+      assertStorable(trigger, "trigger");
       mutateState(filePath, (state) => {
         const index = state.triggers.findIndex((candidate) => candidate.id === trigger.id);
         if (index >= 0) {
@@ -307,6 +327,7 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
     },
 
     claimSchedule(claim) {
+      assertStorable(claim, "scheduleClaim");
       return mutateState(filePath, (state) => {
         if (state.scheduleClaims.some((candidate) => sameScheduleClaim(candidate, claim))) {
           return { value: false, changed: false };
@@ -317,6 +338,8 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
     },
 
     claimScheduleRun(claim, run) {
+      assertStorable(claim, "scheduleClaim");
+      assertStorable(run, "run");
       return mutateState(filePath, (state) => {
         if (state.scheduleClaims.some((candidate) => sameScheduleClaim(candidate, claim))) {
           return { value: false, changed: false };
@@ -345,6 +368,7 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
     },
 
     saveRun(run) {
+      assertStorable(run, "run");
       mutateState(filePath, (state) => {
         const sameKey = state.runs.find(
           (candidate) => candidate.idempotencyKey === run.idempotencyKey,

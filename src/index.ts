@@ -5,9 +5,11 @@ import {
   assertWorkflowRunTransition,
   prepareWorkflowRunForDispatch,
 } from "./run-state.js";
+import { assertJsonSafe, assertOptionalJsonSafe, assertStorableRecord } from "./json-value.js";
 import {
   WorkflowDefinitionVersionConflictError,
   WorkflowRunIdempotencyConflictError,
+  WorkflowValueNotJsonSafeError,
 } from "./store-errors.js";
 import { assertExecutableWorkflow } from "./validation.js";
 
@@ -16,6 +18,7 @@ export { InvalidWorkflowRunTransitionError } from "./run-state.js";
 export {
   WorkflowDefinitionVersionConflictError,
   WorkflowRunIdempotencyConflictError,
+  WorkflowValueNotJsonSafeError,
 } from "./store-errors.js";
 
 export {
@@ -257,6 +260,7 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
 
   return {
     saveDefinition(definition) {
+      assertStorableRecord(definition, "definition");
       const versions = definitions.get(definition.workflowId) ?? [];
       const existing = versions.find((item) => item.version === definition.version);
       if (existing) {
@@ -280,6 +284,7 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       return (definitions.get(workflowId) ?? []).map(clone);
     },
     saveTrigger(trigger) {
+      assertStorableRecord(trigger, "trigger");
       const existing = triggers.get(trigger.id);
       if (existing && isDeepStrictEqual(existing, trigger)) return;
       triggers.set(trigger.id, clone(trigger));
@@ -292,12 +297,15 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       return [...triggers.values()].map(clone);
     },
     claimSchedule(claim) {
+      assertStorableRecord(claim, "scheduleClaim");
       const key = JSON.stringify([claim.triggerId, claim.scheduledAt]);
       if (scheduleClaims.has(key)) return false;
       scheduleClaims.add(key);
       return true;
     },
     claimScheduleRun(claim, run) {
+      assertStorableRecord(claim, "scheduleClaim");
+      assertStorableRecord(run, "run");
       const key = JSON.stringify([claim.triggerId, claim.scheduledAt]);
       if (scheduleClaims.has(key)) return false;
       if (
@@ -322,6 +330,7 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       return true;
     },
     saveRun(run) {
+      assertStorableRecord(run, "run");
       const sameKey = [...runs.values()].find(
         (candidate) => candidate.idempotencyKey === run.idempotencyKey,
       );
@@ -537,8 +546,17 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         deliveryState: error.deliveryState,
       };
     }
+    if (error instanceof WorkflowValueNotJsonSafeError) {
+      return { code: error.code, name: error.name, message: error.message, path: error.path };
+    }
     if (error instanceof Error) {
       return { name: error.name, message: error.message };
+    }
+    try {
+      assertJsonSafe(error, "error");
+    } catch (unsafe) {
+      if (!(unsafe instanceof WorkflowValueNotJsonSafeError)) throw unsafe;
+      return { name: "NonJsonDispatchError", message: unsafe.message };
     }
     return clone(error);
   };
@@ -580,6 +598,11 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         context: clone(run.context),
         idempotencyKey: run.idempotencyKey,
       });
+      // Durable stores persist JSON; a result they cannot store faithfully is parked as a
+      // manual interruption below instead of being silently altered or replayed.
+      if (result.status === "succeeded") assertOptionalJsonSafe(result.output, "output");
+      if (result.status === "failed") assertOptionalJsonSafe(result.error, "error");
+      assertOptionalJsonSafe(result.events, "events");
       const finishedAt = now().toISOString();
       if (result.status === "succeeded") {
         run = {
@@ -606,22 +629,23 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
           finishedAt,
         };
       }
-      store.saveRun(run);
-      return { dispatched: true, run: clone(run) };
     } catch (error) {
       const retryable =
         error instanceof WorkflowDispatchError && error.deliveryState === "not-dispatched";
       run = {
-        ...run,
+        ...claimed,
         status: "interrupted",
         error: storedError(error),
         failureKind: "dispatch",
         recoveryDisposition: retryable ? "retryable" : "manual",
       };
+    }
+
+    try {
       store.saveRun(run);
       return { dispatched: true, run: clone(run) };
     } finally {
-      activeRunIds.delete(run.id);
+      activeRunIds.delete(claimed.id);
     }
   };
 
@@ -676,6 +700,8 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
 
   const startRun = async (input: StartWorkflowRunInput): Promise<WorkflowRunRecord> => {
     const definition = resolveDefinition(input.workflowId, input.workflowVersion);
+    assertJsonSafe(input.input ?? {}, "input");
+    assertJsonSafe(input.context ?? {}, "context");
     const runInput = clone(input.input ?? {});
     const context = clone(input.context ?? {});
 

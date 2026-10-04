@@ -21,3 +21,16 @@ export class WorkflowRunIdempotencyConflictError extends Error {
     this.idempotencyKey = idempotencyKey;
   }
 }
+
+export class WorkflowValueNotJsonSafeError extends Error {
+  readonly code = "WORKFLOW_VALUE_NOT_JSON_SAFE" as const;
+  readonly path: string;
+  readonly reason: string;
+
+  constructor(path: string, reason: string) {
+    super(`Workflow engine value at ${path} is not JSON-safe: ${reason}.`);
+    this.name = "WorkflowValueNotJsonSafeError";
+    this.path = path;
+    this.reason = reason;
+  }
+}

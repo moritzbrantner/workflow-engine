@@ -42,7 +42,9 @@ const store = createFileWorkflowEngineStore(".local/workflow-engine/state.json")
 const engine = createWorkflowEngine({ dispatcher, store });
 ```
 
-The file store atomically replaces a canonical JSON state file and serializes mutations through a lock file. Workflow-version reservation is conflict-aware, schedule claims survive restart, run identity is immutable, and terminal run states cannot regress.
+The file store atomically replaces a canonical JSON state file and serializes mutations through a lock file. Workflow-version reservation is conflict-aware, schedule claims survive restart, run identity is immutable, and terminal run states cannot regress. Lock ownership (the holder's pid) is published atomically, and a lock whose holder process is gone is reclaimed.
+
+Stored values must be JSON-safe so every store returns exactly what was saved: run input/context passed to `startRun` and dispatcher results may only contain plain objects, dense arrays, strings, booleans, `null`, and finite numbers. Non-JSON input is rejected with `WorkflowValueNotJsonSafeError`; a dispatcher result that is not JSON-safe is recorded as an `interrupted` run with `recoveryDisposition: "manual"` and a diagnostic instead of being altered or replayed.
 
 Every logical run has an idempotency key. Dispatcher failures explicitly classified as `not-dispatched` can be recovered with the same run ID/key:
 
