@@ -417,6 +417,46 @@ test("rejects run input that durable stores could not persist unchanged", async 
   assert.deepEqual(engine.listRuns(), []);
 });
 
+test("starts webhook runs without a request body", async () => {
+  const engine = createWorkflowEngine({
+    store: createInMemoryWorkflowEngineStore(),
+    createId: deterministicIds("webhook-empty"),
+    dispatcher: createDispatcher(),
+  });
+  engine.registerWorkflow({ workflowId: "hook", workflow });
+  engine.registerTrigger({ type: "webhook", workflowId: "hook", path: "/hook", method: "GET" });
+
+  const runs = await engine.handleWebhook({ path: "/hook", method: "GET" });
+
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.status, "succeeded");
+  assert.equal("body" in (runs[0]?.input ?? {}), false);
+});
+
+test("rejects non-JSON workflow values before digest deduplication", () => {
+  const engine = createWorkflowEngine({
+    store: createInMemoryWorkflowEngineStore(),
+    dispatcher: createDispatcher(),
+  });
+  const withData = (value: unknown): ExecutableWorkflow =>
+    ({
+      ...workflow,
+      nodes: workflow.nodes.map((node) =>
+        node.id === "start" ? { ...node, data: { value } } : node,
+      ),
+    }) as ExecutableWorkflow;
+
+  assert.equal(engine.registerWorkflow({ workflowId: "data", workflow: withData(null) }).version, 1);
+  assert.throws(
+    () => engine.registerWorkflow({ workflowId: "data", workflow: withData(Number.NaN) }),
+    WorkflowValueNotJsonSafeError,
+  );
+  assert.throws(
+    () => engine.registerWorkflow({ workflowId: "data", workflow: withData(-0) }),
+    WorkflowValueNotJsonSafeError,
+  );
+});
+
 test("parks a non-JSON dispatcher result as a manual interruption instead of altering it", async () => {
   const store = createInMemoryWorkflowEngineStore();
   let dispatches = 0;

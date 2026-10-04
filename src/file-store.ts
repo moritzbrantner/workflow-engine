@@ -1,8 +1,10 @@
+import { createHash, randomUUID } from "node:crypto";
 import {
   linkSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -158,15 +160,23 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-function reclaimOrphanedLock(lockPath: string): boolean {
-  let owner: unknown;
+type ObservedLockOwner = { raw: string; pid: number } | "missing" | "held";
+
+function observeLockOwner(lockPath: string): ObservedLockOwner {
+  let raw: string;
   try {
-    owner = JSON.parse(readFileSync(lockPath, "utf8")) as unknown;
+    raw = readFileSync(lockPath, "utf8");
   } catch (error) {
-    if (isErrno(error, "ENOENT")) return true;
-    return false;
+    if (isErrno(error, "ENOENT")) return "missing";
+    return "held";
   }
 
+  let owner: unknown;
+  try {
+    owner = JSON.parse(raw) as unknown;
+  } catch {
+    return "held";
+  }
   if (
     typeof owner !== "object" ||
     owner === null ||
@@ -177,15 +187,69 @@ function reclaimOrphanedLock(lockPath: string): boolean {
     owner.pid <= 0 ||
     processIsAlive(owner.pid)
   ) {
+    return "held";
+  }
+  return { raw, pid: owner.pid };
+}
+
+function unlinkIfPresent(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+  }
+}
+
+/**
+ * Removes the lock only if it is still the exact stale instance that was inspected.
+ *
+ * Every lock instance carries a unique owner record (pid, timestamp and token), and a reclaimer
+ * must first create the exclusive reclaim marker for that instance. Only the marker holder may
+ * unlink the instance, so after re-reading the lock under the marker it is guaranteed to still be
+ * the stale instance and cannot be a replacement acquired by another process. A marker abandoned
+ * by a reclaimer that died inside this short critical section is cleared after the lock timeout.
+ */
+function reclaimOrphanedLock(lockPath: string): boolean {
+  const observed = observeLockOwner(lockPath);
+  if (observed === "missing") return true;
+  if (observed === "held") return false;
+
+  const instance = createHash("sha256").update(observed.raw).digest("hex").slice(0, 32);
+  const markerPath = `${lockPath}.reclaim-${instance}`;
+  try {
+    writeFileSync(markerPath, `${JSON.stringify({ pid: process.pid })}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (!isErrno(error, "EEXIST")) return false;
+    clearAbandonedReclaimMarker(markerPath);
     return false;
   }
 
   try {
-    unlinkSync(lockPath);
+    let current: string;
+    try {
+      current = readFileSync(lockPath, "utf8");
+    } catch (error) {
+      return isErrno(error, "ENOENT");
+    }
+    if (current !== observed.raw) return false;
+    unlinkIfPresent(lockPath);
     return true;
+  } finally {
+    unlinkIfPresent(markerPath);
+  }
+}
+
+function clearAbandonedReclaimMarker(markerPath: string): void {
+  try {
+    if (Date.now() - statSync(markerPath).mtimeMs > LOCK_TIMEOUT_MILLISECONDS) {
+      unlinkIfPresent(markerPath);
+    }
   } catch (error) {
-    if (isErrno(error, "ENOENT")) return true;
-    return false;
+    if (!isErrno(error, "ENOENT")) throw error;
   }
 }
 
@@ -202,7 +266,11 @@ function publishLock(lockPath: string): void {
   const ownerPath = `${lockPath}.${process.pid}.${lockOwnerSequence}.owner`;
   writeFileSync(
     ownerPath,
-    `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
+    `${JSON.stringify({
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+      token: randomUUID(),
+    })}\n`,
     { encoding: "utf8", mode: 0o600, flag: "wx" },
   );
   try {

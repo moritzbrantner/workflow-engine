@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -453,6 +462,45 @@ test("file store publishes lock ownership atomically and ignores crashed owner d
       readdirSync(directory).filter((entry) => entry.endsWith(".owner") && !entry.includes("999999")),
       [],
       "successful lock publication must not leave owner drafts behind",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("file store reclaims a stale lock only through its per-instance reclaim marker", () => {
+  const directory = mkdtempSync(join(tmpdir(), "workflow-engine-reclaim-marker-"));
+  const filePath = join(directory, "state.json");
+  const lockPath = `${filePath}.lock`;
+
+  try {
+    const staleOwner = `${JSON.stringify({
+      pid: 999_999,
+      acquiredAt: "2026-09-24T00:00:00.000Z",
+      token: "stale-instance",
+    })}\n`;
+    writeFileSync(lockPath, staleOwner, "utf8");
+    // A reclaimer that died inside its critical section left the marker for this instance.
+    const instance = createHash("sha256").update(staleOwner).digest("hex").slice(0, 32);
+    const markerPath = `${lockPath}.reclaim-${instance}`;
+    writeFileSync(markerPath, JSON.stringify({ pid: 999_998 }), "utf8");
+    const abandonedAt = new Date(Date.now() - 60_000);
+    utimesSync(markerPath, abandonedAt, abandonedAt);
+
+    const store = createFileWorkflowEngineStore(filePath);
+    const definition = store.saveDefinition({
+      workflowId: "demo",
+      version: 1,
+      digest: digestExecutableWorkflow(workflow),
+      workflow,
+      createdAt: "2026-09-24T02:00:00.000Z",
+    });
+
+    assert.equal(definition.version, 1);
+    assert.equal(existsSync(lockPath), false);
+    assert.deepEqual(
+      readdirSync(directory).filter((entry) => entry.includes(".reclaim-")),
+      [],
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });

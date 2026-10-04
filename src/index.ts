@@ -775,6 +775,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
   return {
     registerWorkflow(input) {
       const workflow = assertExecutableWorkflow(input.workflow);
+      // Validate before hashing: NaN or -0 would otherwise digest like null or 0 and dedupe
+      // onto a different, already registered definition.
+      assertJsonSafe(workflow, "workflow");
       const digest = digestExecutableWorkflow(workflow);
 
       for (let reservationAttempt = 0; reservationAttempt < 100; reservationAttempt += 1) {
@@ -850,7 +853,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
               : { workflowVersion: trigger.workflowVersion }),
             triggerId: trigger.id,
             input: {
-              body: request.body,
+              ...(request.body === undefined ? {} : { body: request.body }),
               headers: request.headers ?? {},
               query: request.query ?? {},
             },
