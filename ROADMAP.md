@@ -43,3 +43,9 @@ Remaining slice:
 - Node execution and executor plugins belong to `workflow-runner`.
 - Workflow authoring, graph editing, and compilation belong to `workflow-editor`.
 - A distributed worker implementation is an adapter behind the dispatcher boundary, not engine core semantics.
+
+## Cross-repository ComfyUI orchestration reference
+
+[Asset-tooling Decision Atlas 5.1.1](https://github.com/moritzbrantner/asset-tooling/blob/main/docs/decisions/atlas.md) makes ComfyUI the external reference for supported generative-media workflows. An engine-managed run may dispatch a compiled workflow containing one **opaque, ComfyUI-backed asset operation**; the asset-tooling/host adapter and runner handle that external job, while ComfyUI remains authoritative for its own internal graph, queue, inference, and progress. Do not duplicate ComfyUI's scheduler in `workflow-engine` or make it an executor implementation owner.
+
+Engine continues to own top-level registration, immutable definitions, triggers, run identity and recoverable dispatch records. Persist only JSON-safe workflow/model reference identities, external job IDs, content hashes and compact status/evidence; never raw outputs, live streams or credentials in the engine store. An ambiguous dispatch must retain its current conservative recovery treatment instead of silently submitting inference again. Internal first-party asset providers use the same engine/runner boundary without a second orchestration path.
