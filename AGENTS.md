@@ -15,3 +15,7 @@ Cron matching is evaluated in UTC and follows standard five-field day-of-month/d
 ## Validation
 
 Use `bun run verify` for the canonical repository check. Keep behavior tests colocated with the smallest source scope they exercise.
+
+## ComfyUI orchestration boundary
+
+ComfyUI is authoritative for a native media graph's internal inference queue and execution. Engine schedules **top-level** compiled workflows and dispatches opaque ComfyUI-backed operations through the existing runner-shaped interface; never import ComfyUI executors, persist ComfyUI model graphs as an alternate authority or replicate its per-node queue. Retain JSON-safe run records, versioned references and conservative recovery semantics. See the cross-repository `asset-tooling/docs/comfyui-first.md` decision.
