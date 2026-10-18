@@ -20,7 +20,9 @@ export type ExecutableWorkflowDiagnosticCode =
   | "unknown-order-id"
   | "missing-order-id"
   | "invalid-iteration"
-  | "nested-iteration-not-supported";
+  | "nested-iteration-not-supported"
+  | "invalid-workflow-reference"
+  | "unbounded-recursive-reference";
 
 export type ExecutableWorkflowDiagnostic = {
   code: ExecutableWorkflowDiagnosticCode;
@@ -448,6 +450,122 @@ function validateIterationNode(
   }
 }
 
+const portIdsOf = (ports: unknown) =>
+  new Set(
+    (Array.isArray(ports) ? ports : []).flatMap((port) =>
+      isRecord(port) && typeof port.id === "string" ? [port.id] : [],
+    ),
+  );
+
+/**
+ * Structural checks for the compiled-v3 Workflow Reference closure (workflow-editor TECH-005).
+ * The engine stores and dispatches it unchanged; Runner executes references and enforces maxDepth.
+ */
+function validateReferences(value: JsonRecord, diagnostics: ExecutableWorkflowDiagnostic[]): void {
+  const invalid = (path: string, message: string) =>
+    diagnostics.push(diagnostic("invalid-workflow-reference", path, message));
+  const workflows = isRecord(value.workflows) ? value.workflows : undefined;
+  if (value.version === 3 && !workflows) {
+    invalid("/workflows", "Compiled workflow version 3 requires a workflows closure object.");
+    return;
+  }
+  const edges = new Map<string, Array<{ to: string; bounded: boolean }>>();
+  const checkNodes = (nodes: unknown, base: string, key: string) => {
+    const references: Array<{ to: string; bounded: boolean }> = [];
+    (Array.isArray(nodes) ? nodes : []).forEach((node, index) => {
+      if (!isRecord(node) || node.workflowRef === undefined) {
+        return;
+      }
+      const path = `${base}/nodes/${index}/workflowRef`;
+      const reference = node.workflowRef;
+      if (value.version !== 3) {
+        invalid(path, "Workflow references require compiled workflow version 3.");
+        return;
+      }
+      if (!isRecord(reference) || typeof reference.workflow !== "string") {
+        invalid(path, "A workflow reference must name a workflow key.");
+        return;
+      }
+      const maxDepth = reference.maxDepth;
+      if (
+        maxDepth !== undefined &&
+        (typeof maxDepth !== "number" || !Number.isInteger(maxDepth) || maxDepth < 1)
+      ) {
+        invalid(`${path}/maxDepth`, "maxDepth must be a whole number of at least 1.");
+      }
+      if (!workflows || !isRecord(workflows[reference.workflow])) {
+        invalid(`${path}/workflow`, `Workflow ${reference.workflow} is not in the closure.`);
+        return;
+      }
+      references.push({ to: reference.workflow, bounded: maxDepth !== undefined });
+    });
+    edges.set(key, references);
+  };
+  checkNodes(value.nodes, "", "");
+  for (const [key, definition] of Object.entries(workflows ?? {})) {
+    const base = `/workflows/${key}`;
+    if (!isRecord(definition)) {
+      invalid(base, `Workflow definition ${key} must be an object.`);
+      continue;
+    }
+    validateGraph(definition, base, diagnostics, "top-level");
+    checkNodes(definition.nodes, base, key);
+    const contract = definition.interface;
+    if (
+      !isRecord(contract) ||
+      !Array.isArray(contract.inputs) ||
+      !Array.isArray(contract.outputs)
+    ) {
+      invalid(`${base}/interface`, `Workflow definition ${key} needs an interface.`);
+      continue;
+    }
+    const nodes = Array.isArray(definition.nodes) ? definition.nodes : [];
+    for (const [side, list, portSide] of [
+      ["inputs", contract.inputs, "outputs"],
+      ["outputs", contract.outputs, "inputs"],
+    ] as const) {
+      list.forEach((port, index) => {
+        const node = isRecord(port)
+          ? nodes.find((candidate) => isRecord(candidate) && candidate.id === port.nodeId)
+          : undefined;
+        if (
+          !isRecord(port) ||
+          !isNonEmptyString(port.id) ||
+          !isRecord(node) ||
+          typeof port.portId !== "string" ||
+          !portIdsOf(node[portSide]).has(port.portId)
+        ) {
+          invalid(
+            `${base}/interface/${side}/${index}`,
+            "Interface entries must reference an existing start output or end input port.",
+          );
+        }
+      });
+    }
+  }
+
+  // A reference cycle compiles only when at least one reference on it declares maxDepth.
+  const visit = (key: string, stack: string[], bounds: boolean[]): void => {
+    for (const { to, bounded } of edges.get(key) ?? []) {
+      const index = stack.indexOf(to);
+      if (index >= 0) {
+        if (![...bounds.slice(index + 1), bounded].some(Boolean)) {
+          diagnostics.push(
+            diagnostic(
+              "unbounded-recursive-reference",
+              "/workflows",
+              `Recursive workflow reference ${[...stack.slice(index), to].join(" → ")} has no finite maxDepth bound.`,
+            ),
+          );
+        }
+        continue;
+      }
+      visit(to, [...stack, to], [...bounds, bounded]);
+    }
+  };
+  visit("", [""], [false]);
+}
+
 export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowValidationResult {
   if (!isRecord(value)) {
     return {
@@ -471,7 +589,7 @@ export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowVa
     };
   }
 
-  if (value.version !== 1 && value.version !== 2) {
+  if (value.version !== 1 && value.version !== 2 && value.version !== 3) {
     return {
       ok: false,
       diagnostics: [
@@ -485,7 +603,8 @@ export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowVa
   }
 
   const diagnostics: ExecutableWorkflowDiagnostic[] = [];
-  validateGraph(value, "", diagnostics, value.version === 2 ? "top-level" : "none");
+  validateGraph(value, "", diagnostics, value.version === 1 ? "none" : "top-level");
+  validateReferences(value, diagnostics);
 
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
