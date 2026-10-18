@@ -2,14 +2,12 @@ name: pages
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - "web/**"
-      - ".github/workflows/pages.yml"
-  pull_request:
-    paths:
-      - "web/**"
-      - ".github/workflows/pages.yml"
+      - web/**
+      - .github/workflows/pages.yml
+  workflow_call: null
 
 permissions:
   contents: read
@@ -17,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: workflow-engine-pages-pages
   cancel-in-progress: true
 
 jobs:
