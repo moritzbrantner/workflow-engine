@@ -64,6 +64,8 @@ export type ExecutableWorkflowNode = {
    * structure and stores/dispatches it unchanged; the runner executes it.
    */
   iteration?: Record<string, unknown>;
+  /** Compiled human task contract (workflow-editor `human.task.approval` / `human.task.input`). */
+  humanTask?: unknown;
 };
 
 export type ExecutableWorkflowEdge = {
@@ -81,6 +83,8 @@ export type ExecutableWorkflow = {
   nodes: ExecutableWorkflowNode[];
   edges: ExecutableWorkflowEdge[];
   order: string[];
+  /** TypeScript declarations the compiled port types refer to (workflow-editor). */
+  typeDeclarations?: string;
 };
 
 export type WorkflowRunDispatchRequest = {
@@ -89,6 +93,8 @@ export type WorkflowRunDispatchRequest = {
   input?: Record<string, unknown>;
   context?: Record<string, unknown>;
   idempotencyKey: string;
+  /** Continues the same run from its persisted checkpoint with the host's verified response. */
+  resume?: { checkpoint: unknown; response: unknown };
 };
 
 /**
@@ -103,7 +109,12 @@ export type WorkflowRunDispatchObserver = {
 export type WorkflowRunDispatchResult =
   | { status: "succeeded"; output: unknown; events?: readonly unknown[] }
   | { status: "failed"; error: unknown; events?: readonly unknown[] }
-  | { status: "cancelled"; events?: readonly unknown[] };
+  | { status: "cancelled"; events?: readonly unknown[] }
+  /**
+   * The run paused at a waiting step (Engine TECH-001). `checkpoint` is the runner's JSON-safe
+   * continuation; its `waiting` names the node, task id and request (Runner #30 format).
+   */
+  | { status: "suspended"; checkpoint: unknown; events?: readonly unknown[] };
 
 export type WorkflowRunDispatcher = {
   dispatch(
@@ -169,6 +180,7 @@ export type WorkflowTriggerInput =
 export type WorkflowRunStatus =
   | "queued"
   | "running"
+  | "waiting"
   | "interrupted"
   | "succeeded"
   | "failed"
@@ -199,9 +211,75 @@ export type WorkflowRunRecord = {
   events?: readonly unknown[];
   failureKind?: WorkflowRunFailureKind;
   recoveryDisposition?: WorkflowRunRecoveryDisposition;
+  /** Present while the run is `waiting` for a human task (or another host-declared wait). */
+  waiting?: WorkflowRunWait;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+};
+
+/** The persisted wait of a suspended run (Engine TECH-001). */
+export type WorkflowRunWait = {
+  nodeId: string;
+  taskId: string;
+  /** Compiled human task contract of the waiting node (workflow-editor #105), when it has one. */
+  humanTask?: unknown;
+  request?: unknown;
+  /** The runner's JSON-safe continuation checkpoint, dispatched back on resume. */
+  checkpoint: unknown;
+  since: string;
+};
+
+/** A waiting task a host can show to the person who may answer it. */
+export type WorkflowPendingTask = {
+  runId: string;
+  workflowId: string;
+  workflowVersion: number;
+  nodeId: string;
+  taskId: string;
+  humanTask?: unknown;
+  request?: unknown;
+  since: string;
+};
+
+export type RespondToWorkflowTaskInput = {
+  runId: string;
+  taskId: string;
+  /** The host has already authorized the responder; the engine validates the payload. */
+  response: unknown;
+};
+
+/**
+ * Optional typed check for human input responses, e.g. workflow-editor's
+ * `validateWorkflowEditorHumanTaskResponse`. Returns problem messages; empty means valid.
+ */
+export type WorkflowHumanTaskResponseValidator = (
+  humanTask: unknown,
+  response: unknown,
+  options: { typeDeclarations?: string },
+) => readonly string[];
+
+export class WorkflowTaskNotPendingError extends Error {
+  readonly code = "WORKFLOW_TASK_NOT_PENDING" as const;
+  constructor(runId: string, taskId: string) {
+    super(`Task ${taskId} of run ${runId} is not waiting for a response.`);
+    this.name = "WorkflowTaskNotPendingError";
+  }
+}
+
+export class WorkflowTaskResponseInvalidError extends Error {
+  readonly code = "WORKFLOW_TASK_RESPONSE_INVALID" as const;
+  readonly problems: readonly string[];
+  constructor(taskId: string, problems: readonly string[]) {
+    super(`Response to task ${taskId} is invalid: ${problems.join(" ")}`);
+    this.name = "WorkflowTaskResponseInvalidError";
+    this.problems = [...problems];
+  }
+}
+
+export type WorkflowRunClaimOptions = {
+  /** Claim a `waiting` run whose pending task has this id, exactly once, to resume it. */
+  resumeTaskId?: string;
 };
 
 export type WorkflowEngineStore = {
@@ -229,7 +307,11 @@ export type WorkflowEngineStore = {
    * Atomically transitions a queued or retryable-interrupted run into a new running dispatch
    * attempt. Returns undefined when another owner already claimed or completed the run.
    */
-  claimRunForDispatch(runId: string, startedAt: string): WorkflowRunRecord | undefined;
+  claimRunForDispatch(
+    runId: string,
+    startedAt: string,
+    options?: WorkflowRunClaimOptions,
+  ): WorkflowRunRecord | undefined;
   getRun(runId: string): WorkflowRunRecord | undefined;
   getRunByIdempotencyKey(idempotencyKey: string): WorkflowRunRecord | undefined;
   listRuns(): WorkflowRunRecord[];
@@ -240,6 +322,8 @@ export type WorkflowEngineOptions = {
   store?: WorkflowEngineStore;
   now?: () => Date;
   createId?: () => string;
+  /** Typed validation of human task responses; structural checks always apply. */
+  validateHumanTaskResponse?: WorkflowHumanTaskResponseValidator;
 };
 
 export type RegisterWorkflowInput = {
@@ -278,6 +362,14 @@ export type WorkflowEngine = {
   handleWebhook(request: WebhookRequest): Promise<WorkflowRunRecord[]>;
   tick(now?: Date): Promise<WorkflowRunRecord[]>;
   getRun(runId: string): WorkflowRunRecord | undefined;
+  /** Tasks of runs that are waiting for a response, oldest first. */
+  listPendingTasks(): WorkflowPendingTask[];
+  /**
+   * Validates a host-authorized response, claims the waiting task exactly once and resumes the
+   * same run from its checkpoint. Throws WorkflowTaskNotPendingError for stale or duplicate
+   * responses and WorkflowTaskResponseInvalidError for a payload that fails validation.
+   */
+  respondToTask(input: RespondToWorkflowTaskInput): Promise<WorkflowRunRecord>;
   /** Live node progress of a run this engine is dispatching right now; ephemeral. */
   getLiveRun(runId: string): WorkflowLiveRunStatus | undefined;
   /**
@@ -397,12 +489,12 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       }
       runs.set(run.id, clone(stored));
     },
-    claimRunForDispatch(runId, startedAt) {
+    claimRunForDispatch(runId, startedAt, claimOptions) {
       const current = runs.get(runId);
       if (!current) {
         return undefined;
       }
-      const claimed = prepareWorkflowRunForDispatch(current, startedAt);
+      const claimed = prepareWorkflowRunForDispatch(current, startedAt, claimOptions);
       if (!claimed) {
         return undefined;
       }
@@ -577,6 +669,62 @@ function scheduleIdempotencyKey(triggerId: string, scheduledAt: string): string 
   return `schedule:${digest}`;
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Reads the runner checkpoint's `waiting` and attaches the waiting node's compiled task. */
+function waitFromCheckpoint(
+  definition: WorkflowDefinition,
+  checkpoint: unknown,
+  since: string,
+): WorkflowRunWait {
+  const waiting = isPlainRecord(checkpoint) ? checkpoint.waiting : undefined;
+  if (
+    !isPlainRecord(waiting) ||
+    typeof waiting.nodeId !== "string" ||
+    typeof waiting.taskId !== "string"
+  ) {
+    throw new WorkflowDispatchError(
+      "Dispatcher returned a suspension without a waiting node and task id.",
+      "unknown",
+    );
+  }
+  const node = definition.workflow.nodes.find((candidate) => candidate.id === waiting.nodeId);
+  return {
+    nodeId: waiting.nodeId,
+    taskId: waiting.taskId,
+    ...(node?.humanTask === undefined ? {} : { humanTask: clone(node.humanTask) }),
+    ...(waiting.request === undefined ? {} : { request: clone(waiting.request) }),
+    checkpoint: clone(checkpoint),
+    since,
+  };
+}
+
+/** Structural checks of the workflow-editor human task response contract (editor #105). */
+function validateTaskResponse(humanTask: unknown, response: unknown): string[] {
+  if (!isPlainRecord(response)) {
+    return ["The response must be an object."];
+  }
+  const problems: string[] = [];
+  try {
+    assertJsonSafe(response, "response");
+  } catch {
+    problems.push("The response must be JSON.");
+  }
+  if (response.comment !== undefined && typeof response.comment !== "string") {
+    problems.push("The response comment must be text.");
+  }
+  const kind = isPlainRecord(humanTask) ? humanTask.kind : undefined;
+  if (kind === "approval" && response.decision !== "approved" && response.decision !== "rejected") {
+    problems.push('The response decision must be "approved" or "rejected".');
+  }
+  if (kind === "input" && !Object.prototype.hasOwnProperty.call(response, "value")) {
+    problems.push("The response needs a value.");
+  }
+  return problems;
+}
+
 export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngine {
   const store = options.store ?? createInMemoryWorkflowEngineStore();
   const now = options.now ?? (() => new Date());
@@ -644,8 +792,13 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
   const dispatchRun = async (
     definition: WorkflowDefinition,
     runId: string,
+    resume?: { taskId: string; checkpoint: unknown; response: unknown },
   ): Promise<DispatchAttempt> => {
-    const claimed = store.claimRunForDispatch(runId, now().toISOString());
+    const claimed = store.claimRunForDispatch(
+      runId,
+      now().toISOString(),
+      resume ? { resumeTaskId: resume.taskId } : undefined,
+    );
     if (!claimed) {
       const current = store.getRun(runId);
       if (!current) {
@@ -667,6 +820,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
           input: clone(run.input),
           context: clone(run.context),
           idempotencyKey: run.idempotencyKey,
+          ...(resume
+            ? { resume: { checkpoint: clone(resume.checkpoint), response: clone(resume.response) } }
+            : {}),
         },
         { onEvent: (event) => liveRuns.observe(runId, event) },
       );
@@ -680,7 +836,15 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       }
       assertOptionalJsonSafe(result.events, "events");
       const finishedAt = now().toISOString();
-      if (result.status === "succeeded") {
+      if (result.status === "suspended") {
+        assertOptionalJsonSafe(result.checkpoint, "checkpoint");
+        run = {
+          ...run,
+          status: "waiting",
+          waiting: waitFromCheckpoint(definition, result.checkpoint, finishedAt),
+          ...(result.events ? { events: clone(result.events) } : {}),
+        };
+      } else if (result.status === "succeeded") {
         run = {
           ...run,
           status: "succeeded",
@@ -997,6 +1161,67 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
 
     getRun(runId) {
       return store.getRun(runId);
+    },
+    listPendingTasks() {
+      return store
+        .listRuns()
+        .flatMap((run) =>
+          run.status === "waiting" && run.waiting
+            ? [
+                {
+                  runId: run.id,
+                  workflowId: run.workflowId,
+                  workflowVersion: run.workflowVersion,
+                  nodeId: run.waiting.nodeId,
+                  taskId: run.waiting.taskId,
+                  ...(run.waiting.humanTask === undefined
+                    ? {}
+                    : { humanTask: clone(run.waiting.humanTask) }),
+                  ...(run.waiting.request === undefined
+                    ? {}
+                    : { request: clone(run.waiting.request) }),
+                  since: run.waiting.since,
+                },
+              ]
+            : [],
+        )
+        .sort((left, right) => left.since.localeCompare(right.since));
+    },
+    async respondToTask({ runId, taskId, response }) {
+      const run = store.getRun(runId);
+      if (!run || run.status !== "waiting" || run.waiting?.taskId !== taskId) {
+        throw new WorkflowTaskNotPendingError(runId, taskId);
+      }
+      const definition = resolveDefinition(run.workflowId, run.workflowVersion);
+      const problems = validateTaskResponse(run.waiting.humanTask, response);
+      if (
+        problems.length === 0 &&
+        run.waiting.humanTask !== undefined &&
+        options.validateHumanTaskResponse
+      ) {
+        problems.push(
+          ...options.validateHumanTaskResponse(
+            clone(run.waiting.humanTask),
+            clone(response),
+            definition.workflow.typeDeclarations === undefined
+              ? {}
+              : { typeDeclarations: definition.workflow.typeDeclarations },
+          ),
+        );
+      }
+      if (problems.length > 0) {
+        throw new WorkflowTaskResponseInvalidError(taskId, problems);
+      }
+      const attempt = await dispatchRun(definition, runId, {
+        taskId,
+        checkpoint: run.waiting.checkpoint,
+        response,
+      });
+      if (!attempt.dispatched) {
+        // Another response or engine instance claimed the task first.
+        throw new WorkflowTaskNotPendingError(runId, taskId);
+      }
+      return attempt.run;
     },
     getLiveRun(runId) {
       return liveRuns.get(runId);
