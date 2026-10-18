@@ -146,6 +146,66 @@ function defineStoreConformance(name: string, factory: StoreFactory): void {
     }
   });
 
+  test(`${name}: a waiting run is claimed exactly once to resume its task`, () => {
+    const fixture = factory();
+    try {
+      const run: WorkflowRunRecord = {
+        id: "waiting-run",
+        workflowId: "conformance",
+        workflowVersion: 1,
+        workflowDigest: digestExecutableWorkflow(workflow),
+        idempotencyKey: "waiting:key",
+        status: "queued",
+        dispatchAttempts: 0,
+        input: {},
+        context: {},
+        createdAt: "2026-10-18T10:00:00.000Z",
+      };
+      fixture.store.saveRun(run);
+      const running = fixture.store.claimRunForDispatch(run.id, "2026-10-18T10:00:01.000Z");
+      assert.ok(running);
+      fixture.store.saveRun({
+        ...running,
+        status: "waiting",
+        waiting: {
+          nodeId: "review",
+          taskId: "review",
+          checkpoint: { waiting: { nodeId: "review", taskId: "review" } },
+          since: "2026-10-18T10:00:02.000Z",
+        },
+      });
+
+      // Ordinary dispatch/recovery never claims a waiting run; a wrong task id cannot either.
+      assert.equal(
+        fixture.store.claimRunForDispatch(run.id, "2026-10-18T10:00:03.000Z"),
+        undefined,
+      );
+      assert.equal(
+        fixture.store.claimRunForDispatch(run.id, "2026-10-18T10:00:03.000Z", {
+          resumeTaskId: "other",
+        }),
+        undefined,
+      );
+      const reopened = fixture.reopen();
+      assert.equal(reopened.getRun(run.id)?.waiting?.taskId, "review");
+
+      const resumed = reopened.claimRunForDispatch(run.id, "2026-10-18T10:00:04.000Z", {
+        resumeTaskId: "review",
+      });
+      assert.equal(resumed?.status, "running");
+      assert.equal(resumed?.waiting, undefined);
+      assert.equal(resumed?.dispatchAttempts, 2);
+      assert.equal(
+        reopened.claimRunForDispatch(run.id, "2026-10-18T10:00:05.000Z", {
+          resumeTaskId: "review",
+        }),
+        undefined,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test(`${name}: rejects values JSON persistence would change and round-trips JSON exactly`, () => {
     const fixture = factory();
     try {

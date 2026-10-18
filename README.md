@@ -87,3 +87,23 @@ Live status is ephemeral and bounded:
 - It is dropped once the terminal run record is persisted.
 
 After a restart, only the durable run records and their recovery state remain.
+
+## Human task waits
+
+A dispatcher may return `{ status: "suspended", checkpoint }` (Runner #30 format). The engine then stores the run as `waiting`, with a `waiting` record holding:
+
+- the node and task ID;
+- the waiting node's compiled `humanTask` contract (workflow-editor #105);
+- the task request;
+- the JSON-safe checkpoint.
+
+The runner is not kept active while the run waits.
+
+- **Pending tasks:** `engine.listPendingTasks()` lists open tasks, and they survive a restart with the file store.
+- **Responding:** `engine.respondToTask({ runId, taskId, response })` takes a response the host has already authorized, and the engine validates it:
+  - structurally: approval needs `{ decision: "approved" | "rejected" }`, input needs `{ value }`, plus an optional text `comment` and a JSON payload;
+  - with the optional `validateHumanTaskResponse` engine option, for example workflow-editor's `validateWorkflowEditorHumanTaskResponse` with the workflow's `typeDeclarations`.
+- **Resuming:** the engine then atomically claims the task and dispatches `{ resume: { checkpoint, response } }` for the **same run** (same run ID, workflow version, digest and idempotency key).
+- **Stale responses:** duplicate or concurrent responses throw `WorkflowTaskNotPendingError` and never dispatch a second continuation.
+- **Invalid responses:** these throw `WorkflowTaskResponseInvalidError` and leave the task waiting.
+- **Recovery:** waiting runs are never recovered or redispatched automatically.

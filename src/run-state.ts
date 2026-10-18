@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
-import type { WorkflowRunRecord, WorkflowRunStatus } from "./index.js";
+import type { WorkflowRunClaimOptions, WorkflowRunRecord, WorkflowRunStatus } from "./index.js";
 
 export class InvalidWorkflowRunTransitionError extends Error {
   readonly code = "INVALID_WORKFLOW_RUN_TRANSITION" as const;
@@ -26,7 +26,8 @@ export class InvalidWorkflowRunTransitionError extends Error {
 
 const allowedTransitions: Readonly<Record<WorkflowRunStatus, ReadonlySet<WorkflowRunStatus>>> = {
   queued: new Set(["queued", "running", "cancelled"]),
-  running: new Set(["running", "succeeded", "failed", "cancelled", "interrupted"]),
+  running: new Set(["running", "waiting", "succeeded", "failed", "cancelled", "interrupted"]),
+  waiting: new Set(["waiting", "running", "cancelled"]),
   interrupted: new Set(["interrupted", "running", "failed", "cancelled"]),
   succeeded: new Set(["succeeded"]),
   failed: new Set(["failed"]),
@@ -101,10 +102,13 @@ export function assertWorkflowRunTransition(
 export function prepareWorkflowRunForDispatch(
   current: WorkflowRunRecord,
   startedAt: string,
+  options: WorkflowRunClaimOptions = {},
 ): WorkflowRunRecord | undefined {
   const claimable =
-    current.status === "queued" ||
-    (current.status === "interrupted" && current.recoveryDisposition === "retryable");
+    options.resumeTaskId === undefined
+      ? current.status === "queued" ||
+        (current.status === "interrupted" && current.recoveryDisposition === "retryable")
+      : current.status === "waiting" && current.waiting?.taskId === options.resumeTaskId;
   if (!claimable) {
     return undefined;
   }
@@ -119,6 +123,7 @@ export function prepareWorkflowRunForDispatch(
   delete next.failureKind;
   delete next.recoveryDisposition;
   delete next.finishedAt;
+  delete next.waiting;
   assertWorkflowRunTransition(current, next);
   return next;
 }

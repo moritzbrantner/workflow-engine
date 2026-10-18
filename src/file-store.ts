@@ -522,7 +522,7 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
       });
     },
 
-    claimRunForDispatch(runId, startedAt) {
+    claimRunForDispatch(runId, startedAt, claimOptions) {
       return mutateState(filePath, (state) => {
         const index = state.runs.findIndex((candidate) => candidate.id === runId);
         if (index < 0) {
@@ -533,7 +533,7 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
         if (!current) {
           return { value: undefined, changed: false };
         }
-        const claimed = prepareWorkflowRunForDispatch(current, startedAt);
+        const claimed = prepareWorkflowRunForDispatch(current, startedAt, claimOptions);
         if (!claimed) {
           return { value: undefined, changed: false };
         }
