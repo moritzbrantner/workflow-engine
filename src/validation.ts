@@ -77,7 +77,9 @@ function validatePorts(
   path: string,
   diagnostics: ExecutableWorkflowDiagnostic[],
 ): Set<string> | null {
-  if (value === undefined) return new Set();
+  if (value === undefined) {
+    return new Set();
+  }
   if (!Array.isArray(value)) {
     diagnostics.push(
       diagnostic("malformed-port-list", path, "Workflow ports must be an array when present."),
@@ -124,11 +126,7 @@ export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowVa
     return {
       ok: false,
       diagnostics: [
-        diagnostic(
-          "malformed-envelope",
-          "/",
-          "Compiled workflow must be a non-null object.",
-        ),
+        diagnostic("malformed-envelope", "/", "Compiled workflow must be a non-null object."),
       ],
     };
   }

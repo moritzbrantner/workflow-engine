@@ -1,14 +1,20 @@
 import { WorkflowValueNotJsonSafeError } from "./store-errors.js";
 
 function describe(value: unknown): string | undefined {
-  if (value === null) return undefined;
+  if (value === null) {
+    return undefined;
+  }
   switch (typeof value) {
     case "string":
     case "boolean":
       return undefined;
     case "number":
-      if (!Number.isFinite(value)) return `${String(value)} is not a finite number`;
-      if (Object.is(value, -0)) return "-0 does not survive JSON encoding";
+      if (!Number.isFinite(value)) {
+        return `${String(value)} is not a finite number`;
+      }
+      if (Object.is(value, -0)) {
+        return "-0 does not survive JSON encoding";
+      }
       return undefined;
     case "undefined":
       return "undefined is not representable in JSON";
@@ -16,7 +22,7 @@ function describe(value: unknown): string | undefined {
     case "symbol":
     case "function":
       return `${typeof value} is not representable in JSON`;
-    default:
+    case "object":
       return undefined;
   }
 }
@@ -27,23 +33,36 @@ function findNonJsonValue(
   ancestors: Set<object>,
 ): WorkflowValueNotJsonSafeError | undefined {
   const reason = describe(value);
-  if (reason) return new WorkflowValueNotJsonSafeError(path, reason);
-  if (typeof value !== "object" || value === null) return undefined;
+  if (reason) {
+    return new WorkflowValueNotJsonSafeError(path, reason);
+  }
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
 
   if (ancestors.has(value)) {
-    return new WorkflowValueNotJsonSafeError(path, "circular references are not representable in JSON");
+    return new WorkflowValueNotJsonSafeError(
+      path,
+      "circular references are not representable in JSON",
+    );
   }
 
   if (Array.isArray(value)) {
     const extraKeys = Object.keys(value).length !== value.length;
     if (extraKeys || Object.getOwnPropertySymbols(value).length > 0) {
-      return new WorkflowValueNotJsonSafeError(path, "arrays must be dense and have no extra properties");
+      return new WorkflowValueNotJsonSafeError(
+        path,
+        "arrays must be dense and have no extra properties",
+      );
     }
     ancestors.add(value);
     for (let index = 0; index < value.length; index += 1) {
       if (!(index in value)) {
         ancestors.delete(value);
-        return new WorkflowValueNotJsonSafeError(`${path}[${index}]`, "sparse array holes are not representable in JSON");
+        return new WorkflowValueNotJsonSafeError(
+          `${path}[${index}]`,
+          "sparse array holes are not representable in JSON",
+        );
       }
       const nested = findNonJsonValue(value[index], `${path}[${index}]`, ancestors);
       if (nested) {
@@ -85,12 +104,16 @@ function findNonJsonValue(
  */
 export function assertJsonSafe(value: unknown, path: string): void {
   const error = findNonJsonValue(value, path, new Set());
-  if (error) throw error;
+  if (error) {
+    throw error;
+  }
 }
 
 /** Like assertJsonSafe, but accepts a top-level undefined for an optional record field. */
 export function assertOptionalJsonSafe(value: unknown, path: string): void {
-  if (value !== undefined) assertJsonSafe(value, path);
+  if (value !== undefined) {
+    assertJsonSafe(value, path);
+  }
 }
 
 /**
@@ -107,7 +130,5 @@ export function assertStorableRecord(record: object, kind: string): void {
 
 /** Copies a record without its top-level undefined fields, matching what JSON persistence keeps. */
 export function withoutUndefinedFields<T extends object>(record: T): T {
-  return Object.fromEntries(
-    Object.entries(record).filter(([, value]) => value !== undefined),
-  ) as T;
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as T;
 }

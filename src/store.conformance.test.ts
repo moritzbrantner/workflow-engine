@@ -113,10 +113,7 @@ function defineStoreConformance(name: string, factory: StoreFactory): void {
         createdAt: "2026-09-24T01:05:00.000Z",
       };
       fixture.store.saveRun(queued);
-      const running = fixture.store.claimRunForDispatch(
-        queued.id,
-        "2026-09-24T01:05:01.000Z",
-      );
+      const running = fixture.store.claimRunForDispatch(queued.id, "2026-09-24T01:05:01.000Z");
       assert.equal(running?.status, "running");
       assert.equal(running?.dispatchAttempts, 1);
       assert.ok(running);
@@ -169,6 +166,7 @@ function defineStoreConformance(name: string, factory: StoreFactory): void {
         { value: undefined },
         { value: Number.NaN },
         { value: new Date(0) },
+        // oxlint-disable-next-line no-sparse-arrays -- a hole is the JSON-unsafe value under test
         { value: [1, , 3] },
         { value: 1n },
       ]) {
