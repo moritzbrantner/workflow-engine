@@ -2,15 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
-  assertWorkflowRunTransition,
-  prepareWorkflowRunForDispatch,
-} from "./run-state.js";
-import {
   assertJsonSafe,
   assertOptionalJsonSafe,
   assertStorableRecord,
   withoutUndefinedFields,
 } from "./json-value.js";
+import { assertWorkflowRunTransition, prepareWorkflowRunForDispatch } from "./run-state.js";
 import {
   WorkflowDefinitionVersionConflictError,
   WorkflowRunIdConflictError,
@@ -277,10 +274,7 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
         ) {
           return clone(existing);
         }
-        throw new WorkflowDefinitionVersionConflictError(
-          definition.workflowId,
-          definition.version,
-        );
+        throw new WorkflowDefinitionVersionConflictError(definition.workflowId, definition.version);
       }
 
       const stored = withoutUndefinedFields(definition);
@@ -294,7 +288,9 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
     saveTrigger(trigger) {
       assertStorableRecord(trigger, "trigger");
       const existing = triggers.get(trigger.id);
-      if (existing && isDeepStrictEqual(existing, trigger)) return;
+      if (existing && isDeepStrictEqual(existing, trigger)) {
+        return;
+      }
       triggers.set(trigger.id, clone(withoutUndefinedFields(trigger)));
     },
     getTrigger(triggerId) {
@@ -307,7 +303,9 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
     claimSchedule(claim) {
       assertStorableRecord(claim, "scheduleClaim");
       const key = JSON.stringify([claim.triggerId, claim.scheduledAt]);
-      if (scheduleClaims.has(key)) return false;
+      if (scheduleClaims.has(key)) {
+        return false;
+      }
       scheduleClaims.add(key);
       return true;
     },
@@ -315,15 +313,21 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       assertStorableRecord(claim, "scheduleClaim");
       assertStorableRecord(run, "run");
       const key = JSON.stringify([claim.triggerId, claim.scheduledAt]);
-      if (scheduleClaims.has(key)) return false;
-      if (runs.has(run.id)) throw new WorkflowRunIdConflictError(run.id);
+      if (scheduleClaims.has(key)) {
+        return false;
+      }
+      if (runs.has(run.id)) {
+        throw new WorkflowRunIdConflictError(run.id);
+      }
       if (
         run.status !== "queued" ||
         run.dispatchAttempts !== 0 ||
         run.triggerId !== claim.triggerId ||
         run.idempotencyKey !== claim.idempotencyKey
       ) {
-        throw new Error("Scheduled workflow runs must start queued and match their schedule claim.");
+        throw new Error(
+          "Scheduled workflow runs must start queued and match their schedule claim.",
+        );
       }
 
       const sameKey = [...runs.values()].find(
@@ -350,14 +354,20 @@ export function createInMemoryWorkflowEngineStore(): WorkflowEngineStore {
       const previous = runs.get(run.id);
       assertWorkflowRunTransition(previous, run);
       const stored = withoutUndefinedFields(run);
-      if (previous && isDeepStrictEqual(previous, stored)) return;
+      if (previous && isDeepStrictEqual(previous, stored)) {
+        return;
+      }
       runs.set(run.id, clone(stored));
     },
     claimRunForDispatch(runId, startedAt) {
       const current = runs.get(runId);
-      if (!current) return undefined;
+      if (!current) {
+        return undefined;
+      }
       const claimed = prepareWorkflowRunForDispatch(current, startedAt);
-      if (!claimed) return undefined;
+      if (!claimed) {
+        return undefined;
+      }
       runs.set(runId, clone(claimed));
       return clone(claimed);
     },
@@ -433,7 +443,9 @@ type CronField = {
 };
 
 function parseCronNumber(value: string, min: number, max: number, field: string): number {
-  if (!/^\d+$/.test(value)) throw new Error(`Invalid ${field} cron value: ${value}`);
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`Invalid ${field} cron value: ${value}`);
+  }
   const parsed = Number(value);
   if (parsed < min || parsed > max) {
     throw new Error(`Out-of-range ${field} cron value: ${value}`);
@@ -444,14 +456,14 @@ function parseCronNumber(value: string, min: number, max: number, field: string)
 function parseCronField(expression: string, min: number, max: number, field: string): CronField {
   const accepted = new Set<number>();
   const parts = expression.split(",");
-  if (parts.length === 0) throw new Error(`Invalid ${field} cron field.`);
+  if (parts.length === 0) {
+    throw new Error(`Invalid ${field} cron field.`);
+  }
 
   for (const part of parts) {
     const [base = "", stepText] = part.split("/");
     const step =
-      stepText === undefined
-        ? 1
-        : parseCronNumber(stepText, 1, max - min + 1, `${field} step`);
+      stepText === undefined ? 1 : parseCronNumber(stepText, 1, max - min + 1, `${field} step`);
     let start = min;
     let end = max;
 
@@ -463,13 +475,17 @@ function parseCronField(expression: string, min: number, max: number, field: str
       } else if (range.length === 2) {
         start = parseCronNumber(range[0] ?? "", min, max, field);
         end = parseCronNumber(range[1] ?? "", min, max, field);
-        if (start > end) throw new Error(`Invalid ${field} cron range: ${base}`);
+        if (start > end) {
+          throw new Error(`Invalid ${field} cron range: ${base}`);
+        }
       } else {
         throw new Error(`Invalid ${field} cron field: ${part}`);
       }
     }
 
-    for (let value = start; value <= end; value += step) accepted.add(value);
+    for (let value = start; value <= end; value += step) {
+      accepted.add(value);
+    }
   }
 
   return { matches: (value) => accepted.has(value) };
@@ -491,14 +507,12 @@ export function matchesCron(expression: string, date: Date): boolean {
   const dayMatches = dayField.matches(date.getUTCDate());
   const weekdayMatches =
     weekdayField.matches(weekdayValue) || (weekdayValue === 0 && weekdayField.matches(7));
-  const calendarDayMatches =
-    day === "*" && weekday === "*"
-      ? true
-      : day === "*"
-        ? weekdayMatches
-        : weekday === "*"
-          ? dayMatches
-          : dayMatches || weekdayMatches;
+  let calendarDayMatches = dayMatches || weekdayMatches;
+  if (day === "*") {
+    calendarDayMatches = weekday === "*" || weekdayMatches;
+  } else if (weekday === "*") {
+    calendarDayMatches = dayMatches;
+  }
 
   return (
     parseCronField(minute, 0, 59, "minute").matches(date.getUTCMinutes()) &&
@@ -565,7 +579,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     try {
       assertJsonSafe(error, "error");
     } catch (unsafe) {
-      if (!(unsafe instanceof WorkflowValueNotJsonSafeError)) throw unsafe;
+      if (!(unsafe instanceof WorkflowValueNotJsonSafeError)) {
+        throw unsafe;
+      }
       return { name: "NonJsonDispatchError", message: unsafe.message };
     }
     return clone(error);
@@ -593,7 +609,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     const claimed = store.claimRunForDispatch(runId, now().toISOString());
     if (!claimed) {
       const current = store.getRun(runId);
-      if (!current) throw new Error(`Workflow run ${runId} no longer exists.`);
+      if (!current) {
+        throw new Error(`Workflow run ${runId} no longer exists.`);
+      }
       return { dispatched: false, run: current };
     }
 
@@ -610,8 +628,12 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       });
       // Durable stores persist JSON; a result they cannot store faithfully is parked as a
       // manual interruption below instead of being silently altered or replayed.
-      if (result.status === "succeeded") assertOptionalJsonSafe(result.output, "output");
-      if (result.status === "failed") assertOptionalJsonSafe(result.error, "error");
+      if (result.status === "succeeded") {
+        assertOptionalJsonSafe(result.output, "output");
+      }
+      if (result.status === "failed") {
+        assertOptionalJsonSafe(result.error, "error");
+      }
       assertOptionalJsonSafe(result.events, "events");
       const finishedAt = now().toISOString();
       if (result.status === "succeeded") {
@@ -682,7 +704,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     context: Record<string, unknown>,
   ): WorkflowRunRecord | undefined => {
     const existing = store.getRunByIdempotencyKey(idempotencyKey);
-    if (!existing) return undefined;
+    if (!existing) {
+      return undefined;
+    }
     if (!runMatchesRequest(existing, definition, input, runInput, context)) {
       throw new WorkflowRunIdempotencyConflictError(idempotencyKey);
     }
@@ -724,7 +748,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         runInput,
         context,
       );
-      if (existing) return existing;
+      if (existing) {
+        return existing;
+      }
     }
 
     const run = createQueuedRun(definition, {
@@ -736,10 +762,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
     try {
       store.saveRun(run);
     } catch (error) {
-      if (
-        input.idempotencyKey &&
-        error instanceof WorkflowRunIdempotencyConflictError
-      ) {
+      if (input.idempotencyKey && error instanceof WorkflowRunIdempotencyConflictError) {
         const existing = existingIdempotentRun(
           input.idempotencyKey,
           definition,
@@ -747,7 +770,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
           runInput,
           context,
         );
-        if (existing) return existing;
+        if (existing) {
+          return existing;
+        }
       }
       throw error;
     }
@@ -765,12 +790,16 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         (persisted.status === "interrupted" && persisted.recoveryDisposition === "retryable")
       ) {
         const attempt = await dispatchRun(definitionForRun(persisted), persisted.id);
-        if (attempt.dispatched) recovered.push(attempt.run);
+        if (attempt.dispatched) {
+          recovered.push(attempt.run);
+        }
         continue;
       }
 
       if (persisted.status === "running") {
-        if (activeRunIds.has(persisted.id)) continue;
+        if (activeRunIds.has(persisted.id)) {
+          continue;
+        }
         ambiguous.push(clone(persisted));
         continue;
       }
@@ -794,7 +823,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       for (let reservationAttempt = 0; reservationAttempt < 100; reservationAttempt += 1) {
         const versions = store.listDefinitions(input.workflowId);
         const existing = versions.find((definition) => definition.digest === digest);
-        if (existing) return clone(existing);
+        if (existing) {
+          return clone(existing);
+        }
 
         const latest = versions.at(-1);
         const definition: WorkflowDefinition = {
@@ -808,7 +839,9 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
         try {
           return clone(store.saveDefinition(definition));
         } catch (error) {
-          if (error instanceof WorkflowDefinitionVersionConflictError) continue;
+          if (error instanceof WorkflowDefinitionVersionConflictError) {
+            continue;
+          }
           throw error;
         }
       }
@@ -827,8 +860,12 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
 
     async fireTrigger(triggerId, input = {}) {
       const trigger = store.getTrigger(triggerId);
-      if (!trigger) throw new Error(`Trigger ${triggerId} is not registered.`);
-      if (!trigger.enabled) throw new Error(`Trigger ${triggerId} is disabled.`);
+      if (!trigger) {
+        throw new Error(`Trigger ${triggerId} is not registered.`);
+      }
+      if (!trigger.enabled) {
+        throw new Error(`Trigger ${triggerId} is disabled.`);
+      }
       if (trigger.type !== "manual") {
         throw new Error(`Trigger ${triggerId} is not a manual trigger.`);
       }
@@ -847,13 +884,15 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
 
     async handleWebhook(request) {
       const method = (request.method ?? "POST").toUpperCase();
-      const triggers = store.listTriggers().filter(
-        (trigger): trigger is WebhookWorkflowTrigger =>
-          trigger.type === "webhook" &&
-          trigger.enabled &&
-          trigger.path === request.path &&
-          trigger.method === method,
-      );
+      const triggers = store
+        .listTriggers()
+        .filter(
+          (trigger): trigger is WebhookWorkflowTrigger =>
+            trigger.type === "webhook" &&
+            trigger.enabled &&
+            trigger.path === request.path &&
+            trigger.method === method,
+        );
       const runs: WorkflowRunRecord[] = [];
       for (const trigger of triggers) {
         runs.push(

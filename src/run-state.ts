@@ -98,7 +98,6 @@ export function assertWorkflowRunTransition(
   }
 }
 
-
 export function prepareWorkflowRunForDispatch(
   current: WorkflowRunRecord,
   startedAt: string,
@@ -106,7 +105,9 @@ export function prepareWorkflowRunForDispatch(
   const claimable =
     current.status === "queued" ||
     (current.status === "interrupted" && current.recoveryDisposition === "retryable");
-  if (!claimable) return undefined;
+  if (!claimable) {
+    return undefined;
+  }
 
   const next = structuredClone(current);
   next.status = "running";

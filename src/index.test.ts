@@ -108,7 +108,6 @@ test("matches five-field cron expressions in UTC", () => {
   assert.equal(matchesCron("0 0 * * 7", new Date("2026-08-30T00:00:00.000Z")), true);
 });
 
-
 test("claims a cron occurrence once across engine instances and restarts", async () => {
   const store = createInMemoryWorkflowEngineStore();
   const dispatched: WorkflowRunDispatchRequest[] = [];
@@ -212,7 +211,6 @@ test("keeps a schedule claim after dispatch failure so retry cannot duplicate th
   assert.equal(retryDispatches, 0);
 });
 
-
 test("derives the same schedule idempotency key without shared process state", async () => {
   const scheduledKey = async (prefix: string, observedAt: string) => {
     const store = createInMemoryWorkflowEngineStore();
@@ -239,7 +237,6 @@ test("derives the same schedule idempotency key without shared process state", a
 
   assert.equal(first, second);
 });
-
 
 test("recovers a proven not-dispatched run with the same run identity", async () => {
   const store = createInMemoryWorkflowEngineStore();
@@ -389,7 +386,6 @@ test("workflow execution failures are terminal and are not recovered", async () 
   assert.deepEqual(await engine.recoverRuns(), { recovered: [], ambiguous: [] });
 });
 
-
 test("rejects run input that durable stores could not persist unchanged", async () => {
   const store = createInMemoryWorkflowEngineStore();
   let dispatches = 0;
@@ -446,7 +442,10 @@ test("rejects non-JSON workflow values before digest deduplication", () => {
       ),
     }) as ExecutableWorkflow;
 
-  assert.equal(engine.registerWorkflow({ workflowId: "data", workflow: withData(null) }).version, 1);
+  assert.equal(
+    engine.registerWorkflow({ workflowId: "data", workflow: withData(null) }).version,
+    1,
+  );
   assert.throws(
     () => engine.registerWorkflow({ workflowId: "data", workflow: withData(Number.NaN) }),
     WorkflowValueNotJsonSafeError,
@@ -544,7 +543,6 @@ test("reconciles a concurrent start that already claimed the same idempotency ke
   assert.equal(dispatches, 0);
   assert.equal(engine.listRuns().length, 1);
 });
-
 
 test("concurrent recovery claims a queued run for dispatch only once", async () => {
   const store = createInMemoryWorkflowEngineStore();

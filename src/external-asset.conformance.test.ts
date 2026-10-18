@@ -61,14 +61,20 @@ test("pins an external-operation workflow version and stores JSON-safe asset ref
   assert.equal(submitted?.idempotencyKey, "asset:icon-1");
   assert.deepEqual(engine.getRun(first.id), first);
   assert.deepEqual(compiled, before);
-  assert.equal(engine.registerWorkflow({ workflowId: "external-asset", workflow: compiled }).version, 1);
+  assert.equal(
+    engine.registerWorkflow({ workflowId: "external-asset", workflow: compiled }).version,
+    1,
+  );
 
   const newNativeWorkflow = structuredClone(compiled);
   const node = newNativeWorkflow.nodes.find((node) => node.id === "generate");
   assert.ok(node);
   const operation = node.data?.assetOperation as { parameters: { workflow: { sha256: string } } };
   operation.parameters.workflow.sha256 = "c".repeat(64);
-  const updated = engine.registerWorkflow({ workflowId: "external-asset", workflow: newNativeWorkflow });
+  const updated = engine.registerWorkflow({
+    workflowId: "external-asset",
+    workflow: newNativeWorkflow,
+  });
   assert.equal(updated.version, 2);
   assert.notEqual(updated.digest, registered.digest);
   assert.equal(first.workflowDigest, registered.digest);
@@ -96,6 +102,9 @@ test("ambiguous external dispatch stays manual instead of resubmitting a model j
   assert.equal(run.recoveryDisposition, "manual");
   const recovery = await engine.recoverRuns();
   assert.equal(recovery.recovered.length, 0);
-  assert.deepEqual(recovery.ambiguous.map((value) => value.id), [run.id]);
+  assert.deepEqual(
+    recovery.ambiguous.map((value) => value.id),
+    [run.id],
+  );
   assert.equal(dispatches, 1);
 });

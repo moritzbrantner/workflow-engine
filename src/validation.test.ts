@@ -24,7 +24,9 @@ test("accepts the canonical compiled-v1 fixture without stripping forward-compat
   const result = validateExecutableWorkflow(compiledV1Fixture);
 
   assert.equal(result.ok, true);
-  if (!result.ok) return;
+  if (!result.ok) {
+    return;
+  }
 
   assert.deepEqual(result.workflow, compiledV1Fixture);
   assert.deepEqual(

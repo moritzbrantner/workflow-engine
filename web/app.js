@@ -16,9 +16,16 @@ let runInProgress = false;
 let nextRunId = 1;
 
 function stableStringify(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .join(",")}}`;
 }
 
 function demoFingerprint(value) {
@@ -34,17 +41,29 @@ function demoFingerprint(value) {
 }
 
 function validateWorkflow(workflow) {
-  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) throw new Error("Definition must be a JSON object.");
-  if (workflow.format !== "@moritzbrantner/workflow/compiled") throw new Error("Unexpected compiled workflow format.");
-  if (workflow.version !== 1) throw new Error("Compiled workflow schema version must be 1.");
-  if (!Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges) || !Array.isArray(workflow.order)) {
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
+    throw new Error("Definition must be a JSON object.");
+  }
+  if (workflow.format !== "@moritzbrantner/workflow/compiled") {
+    throw new Error("Unexpected compiled workflow format.");
+  }
+  if (workflow.version !== 1) {
+    throw new Error("Compiled workflow schema version must be 1.");
+  }
+  if (
+    !Array.isArray(workflow.nodes) ||
+    !Array.isArray(workflow.edges) ||
+    !Array.isArray(workflow.order)
+  ) {
     throw new Error("nodes, edges, and order must be arrays.");
   }
 }
 
 function currentWorkflowId() {
   const workflowId = workflowIdInput.value.trim();
-  if (!workflowId) throw new Error("Workflow ID is required.");
+  if (!workflowId) {
+    throw new Error("Workflow ID is required.");
+  }
   return workflowId;
 }
 
@@ -72,20 +91,22 @@ function renderVersions(workflowId) {
   }
 
   versionsList.className = "version-list";
-  versionsList.replaceChildren(...[...versions].reverse().map((definition) => {
-    const row = document.createElement("div");
-    row.className = "version-row";
-    const version = document.createElement("strong");
-    version.textContent = `v${definition.version}`;
-    const digest = document.createElement("code");
-    digest.textContent = shortFingerprint(definition.workflowDigest);
-    digest.title = `${definition.workflowDigest} (browser demo fingerprint; production engine uses SHA-256)`;
-    const time = document.createElement("time");
-    time.dateTime = definition.createdAt;
-    time.textContent = new Date(definition.createdAt).toLocaleTimeString();
-    row.append(version, digest, time);
-    return row;
-  }));
+  versionsList.replaceChildren(
+    ...[...versions].reverse().map((definition) => {
+      const row = document.createElement("div");
+      row.className = "version-row";
+      const version = document.createElement("strong");
+      version.textContent = `v${definition.version}`;
+      const digest = document.createElement("code");
+      digest.textContent = shortFingerprint(definition.workflowDigest);
+      digest.title = `${definition.workflowDigest} (browser demo fingerprint; production engine uses SHA-256)`;
+      const time = document.createElement("time");
+      time.dateTime = definition.createdAt;
+      time.textContent = new Date(definition.createdAt).toLocaleTimeString();
+      row.append(version, digest, time);
+      return row;
+    }),
+  );
 }
 
 function registerDefinition() {
@@ -123,8 +144,15 @@ function registerDefinition() {
 }
 
 function setTimeline(status) {
-  const active = status === "queued" ? ["queued"] : status === "running" ? ["queued", "running"] : ["queued", "running", "succeeded"];
-  timelineSteps.forEach((step) => step.classList.toggle("active", active.includes(step.dataset.step)));
+  let active = ["queued", "running", "succeeded"];
+  if (status === "queued") {
+    active = ["queued"];
+  } else if (status === "running") {
+    active = ["queued", "running"];
+  }
+  timelineSteps.forEach((step) =>
+    step.classList.toggle("active", active.includes(step.dataset.step)),
+  );
 }
 
 function renderRun(run) {
@@ -139,21 +167,31 @@ function delay(milliseconds) {
 }
 
 function triggerInput(type) {
-  if (type === "manual") return { source: "manual" };
-  if (type === "webhook") return { body: { source: "github-pages" }, headers: {}, query: {} };
+  if (type === "manual") {
+    return { source: "manual" };
+  }
+  if (type === "webhook") {
+    return { body: { source: "github-pages" }, headers: {}, query: {} };
+  }
   return { scheduledAt: new Date().toISOString() };
 }
 
 async function runDemo(type) {
-  if (runInProgress) return;
+  if (runInProgress) {
+    return;
+  }
   triggerMessage.textContent = "";
   try {
     const workflowId = currentWorkflowId();
     const latest = getVersions(workflowId).at(-1);
-    if (!latest) throw new Error("Register a definition before firing a trigger.");
+    if (!latest) {
+      throw new Error("Register a definition before firing a trigger.");
+    }
 
     runInProgress = true;
-    triggerButtons.forEach((button) => { button.disabled = true; });
+    triggerButtons.forEach((button) => {
+      button.disabled = true;
+    });
     const createdAt = new Date().toISOString();
     const run = {
       id: `demo-run-${nextRunId++}`,
@@ -182,7 +220,9 @@ async function runDemo(type) {
     triggerMessage.textContent = error instanceof Error ? error.message : String(error);
   } finally {
     runInProgress = false;
-    triggerButtons.forEach((button) => { button.disabled = false; });
+    triggerButtons.forEach((button) => {
+      button.disabled = false;
+    });
   }
 }
 
@@ -193,6 +233,10 @@ workflowIdInput.addEventListener("input", () => {
   setPill(definitionState, getVersions(workflowId).length ? "registered" : "unregistered");
 });
 editor.addEventListener("input", () => {
-  if (getVersions(workflowIdInput.value.trim()).length > 0) setPill(definitionState, "edited");
+  if (getVersions(workflowIdInput.value.trim()).length > 0) {
+    setPill(definitionState, "edited");
+  }
 });
-triggerButtons.forEach((button) => button.addEventListener("click", () => runDemo(button.dataset.trigger)));
+triggerButtons.forEach((button) =>
+  button.addEventListener("click", () => runDemo(button.dataset.trigger)),
+);

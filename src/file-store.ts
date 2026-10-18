@@ -11,19 +11,6 @@ import {
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import {
-  assertStorableRecord as assertStorable,
-  withoutUndefinedFields,
-} from "./json-value.js";
-import {
-  assertWorkflowRunTransition,
-  prepareWorkflowRunForDispatch,
-} from "./run-state.js";
-import {
-  WorkflowDefinitionVersionConflictError,
-  WorkflowRunIdConflictError,
-  WorkflowRunIdempotencyConflictError,
-} from "./store-errors.js";
 import type {
   WorkflowDefinition,
   WorkflowEngineStore,
@@ -31,6 +18,13 @@ import type {
   WorkflowScheduleClaim,
   WorkflowTrigger,
 } from "./index.js";
+import { assertStorableRecord as assertStorable, withoutUndefinedFields } from "./json-value.js";
+import { assertWorkflowRunTransition, prepareWorkflowRunForDispatch } from "./run-state.js";
+import {
+  WorkflowDefinitionVersionConflictError,
+  WorkflowRunIdConflictError,
+  WorkflowRunIdempotencyConflictError,
+} from "./store-errors.js";
 
 const FILE_STORE_SCHEMA_VERSION = 1 as const;
 const LOCK_RETRY_MILLISECONDS = 5;
@@ -89,7 +83,9 @@ function readState(filePath: string): PersistedWorkflowEngineState {
   try {
     contents = readFileSync(filePath, "utf8");
   } catch (error) {
-    if (isErrno(error, "ENOENT")) return emptyState();
+    if (isErrno(error, "ENOENT")) {
+      return emptyState();
+    }
     throw error;
   }
 
@@ -106,7 +102,10 @@ function readState(filePath: string): PersistedWorkflowEngineState {
 }
 
 function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  if (left < right) {
+    return -1;
+  }
+  return left > right ? 1 : 0;
 }
 
 function canonicalizeState(state: PersistedWorkflowEngineState): PersistedWorkflowEngineState {
@@ -142,7 +141,9 @@ function writeState(filePath: string, state: PersistedWorkflowEngineState): void
     try {
       unlinkSync(temporaryPath);
     } catch (cleanupError) {
-      if (!isErrno(cleanupError, "ENOENT")) throw cleanupError;
+      if (!isErrno(cleanupError, "ENOENT")) {
+        throw cleanupError;
+      }
     }
     throw error;
   }
@@ -158,8 +159,12 @@ function processIsAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if (isErrno(error, "ESRCH")) return false;
-    if (isErrno(error, "EPERM")) return true;
+    if (isErrno(error, "ESRCH")) {
+      return false;
+    }
+    if (isErrno(error, "EPERM")) {
+      return true;
+    }
     throw error;
   }
 }
@@ -181,8 +186,12 @@ function processStartTime(pid: number | "self"): string | undefined {
 }
 
 function lockOwnerIsAlive(pid: number, startTime: unknown): boolean {
-  if (!processIsAlive(pid)) return false;
-  if (typeof startTime !== "string") return true;
+  if (!processIsAlive(pid)) {
+    return false;
+  }
+  if (typeof startTime !== "string") {
+    return true;
+  }
   const current = processStartTime(pid);
   return current === undefined || current === startTime;
 }
@@ -194,7 +203,9 @@ function observeLockOwner(lockPath: string): ObservedLockOwner {
   try {
     raw = readFileSync(lockPath, "utf8");
   } catch (error) {
-    if (isErrno(error, "ENOENT")) return "missing";
+    if (isErrno(error, "ENOENT")) {
+      return "missing";
+    }
     return "held";
   }
 
@@ -223,7 +234,9 @@ function unlinkIfPresent(path: string): void {
   try {
     unlinkSync(path);
   } catch (error) {
-    if (!isErrno(error, "ENOENT")) throw error;
+    if (!isErrno(error, "ENOENT")) {
+      throw error;
+    }
   }
 }
 
@@ -238,8 +251,12 @@ function unlinkIfPresent(path: string): void {
  */
 function reclaimOrphanedLock(lockPath: string): boolean {
   const observed = observeLockOwner(lockPath);
-  if (observed === "missing") return true;
-  if (observed === "held") return false;
+  if (observed === "missing") {
+    return true;
+  }
+  if (observed === "held") {
+    return false;
+  }
 
   const instance = createHash("sha256").update(observed.raw).digest("hex").slice(0, 32);
   const markerPath = `${lockPath}.reclaim-${instance}`;
@@ -250,7 +267,9 @@ function reclaimOrphanedLock(lockPath: string): boolean {
       flag: "wx",
     });
   } catch (error) {
-    if (!isErrno(error, "EEXIST")) return false;
+    if (!isErrno(error, "EEXIST")) {
+      return false;
+    }
     clearAbandonedReclaimMarker(markerPath);
     return false;
   }
@@ -262,7 +281,9 @@ function reclaimOrphanedLock(lockPath: string): boolean {
     } catch (error) {
       return isErrno(error, "ENOENT");
     }
-    if (current !== observed.raw) return false;
+    if (current !== observed.raw) {
+      return false;
+    }
     unlinkIfPresent(lockPath);
     return true;
   } finally {
@@ -276,7 +297,9 @@ function clearAbandonedReclaimMarker(markerPath: string): void {
       unlinkIfPresent(markerPath);
     }
   } catch (error) {
-    if (!isErrno(error, "ENOENT")) throw error;
+    if (!isErrno(error, "ENOENT")) {
+      throw error;
+    }
   }
 }
 
@@ -324,7 +347,9 @@ function withFileLock<T>(filePath: string, operation: () => T): T {
           cause: error,
         });
       }
-      if (reclaimOrphanedLock(lockPath)) continue;
+      if (reclaimOrphanedLock(lockPath)) {
+        continue;
+      }
       if (Date.now() >= deadline) {
         throw new Error(`Could not acquire workflow engine store lock ${lockPath}.`, {
           cause: error,
@@ -343,14 +368,14 @@ function withFileLock<T>(filePath: string, operation: () => T): T {
 
 function mutateState<T>(
   filePath: string,
-  mutation: (
-    state: PersistedWorkflowEngineState,
-  ) => { value: T; changed: boolean },
+  mutation: (state: PersistedWorkflowEngineState) => { value: T; changed: boolean },
 ): T {
   return withFileLock(filePath, () => {
     const state = readState(filePath);
     const result = mutation(state);
-    if (result.changed) writeState(filePath, state);
+    if (result.changed) {
+      writeState(filePath, state);
+    }
     return result.value;
   });
 }
@@ -420,7 +445,9 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
     },
 
     listTriggers() {
-      return readState(filePath).triggers.sort((left, right) => compareStrings(left.id, right.id)).map(clone);
+      return readState(filePath)
+        .triggers.sort((left, right) => compareStrings(left.id, right.id))
+        .map(clone);
     },
 
     claimSchedule(claim) {
@@ -450,7 +477,9 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
           run.triggerId !== claim.triggerId ||
           run.idempotencyKey !== claim.idempotencyKey
         ) {
-          throw new Error("Scheduled workflow runs must start queued and match their schedule claim.");
+          throw new Error(
+            "Scheduled workflow runs must start queued and match their schedule claim.",
+          );
         }
 
         const sameKey = state.runs.find(
@@ -496,12 +525,18 @@ export function createFileWorkflowEngineStore(path: string): WorkflowEngineStore
     claimRunForDispatch(runId, startedAt) {
       return mutateState(filePath, (state) => {
         const index = state.runs.findIndex((candidate) => candidate.id === runId);
-        if (index < 0) return { value: undefined, changed: false };
+        if (index < 0) {
+          return { value: undefined, changed: false };
+        }
 
         const current = state.runs[index];
-        if (!current) return { value: undefined, changed: false };
+        if (!current) {
+          return { value: undefined, changed: false };
+        }
         const claimed = prepareWorkflowRunForDispatch(current, startedAt);
-        if (!claimed) return { value: undefined, changed: false };
+        if (!claimed) {
+          return { value: undefined, changed: false };
+        }
 
         state.runs[index] = clone(claimed);
         return { value: clone(claimed), changed: true };

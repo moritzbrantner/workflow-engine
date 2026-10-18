@@ -8,5 +8,4 @@ A **run record** pins the exact workflow version and digest it dispatched, carri
 
 A **dispatcher** is the engine/runner boundary. `workflow-runner` satisfies this interface structurally, so `workflow-engine` has no source or package dependency on the private runner repository.
 
-
 A **durable store** is still an engine-owned adapter. The built-in file store is for restart-safe local/single-process deployments; distributed queue or worker semantics remain outside the store contract.

@@ -224,10 +224,7 @@ test("engine retries version reservation after an atomic store conflict", () => 
           digest: digestExecutableWorkflow(occupiedWorkflow),
           workflow: occupiedWorkflow,
         });
-        throw new WorkflowDefinitionVersionConflictError(
-          definition.workflowId,
-          definition.version,
-        );
+        throw new WorkflowDefinitionVersionConflictError(definition.workflowId, definition.version);
       }
       return underlying.saveDefinition(definition);
     },
@@ -311,7 +308,6 @@ test("restart marks a previously running dispatch as ambiguous instead of replay
   }
 });
 
-
 test("retryable dispatch interruption survives a durable store reopen", async () => {
   const directory = mkdtempSync(join(tmpdir(), "workflow-engine-retryable-"));
   const filePath = join(directory, "state.json");
@@ -367,7 +363,6 @@ test("retryable dispatch interruption survives a durable store reopen", async ()
     rmSync(directory, { recursive: true, force: true });
   }
 });
-
 
 test("schedule occurrence claim and queued run persist as one durable transaction", () => {
   const directory = mkdtempSync(join(tmpdir(), "workflow-engine-schedule-transaction-"));
@@ -459,7 +454,9 @@ test("file store publishes lock ownership atomically and ignores crashed owner d
 
     assert.equal(existsSync(lockPath), false);
     assert.deepEqual(
-      readdirSync(directory).filter((entry) => entry.endsWith(".owner") && !entry.includes("999999")),
+      readdirSync(directory).filter(
+        (entry) => entry.endsWith(".owner") && !entry.includes("999999"),
+      ),
       [],
       "successful lock publication must not leave owner drafts behind",
     );
@@ -507,38 +504,42 @@ test("file store reclaims a stale lock only through its per-instance reclaim mar
   }
 });
 
-test("file store reclaims a lock whose pid was reused by a different process incarnation", {
-  skip: !existsSync("/proc/self/stat"),
-}, () => {
-  const directory = mkdtempSync(join(tmpdir(), "workflow-engine-pid-reuse-"));
-  const filePath = join(directory, "state.json");
-  const lockPath = `${filePath}.lock`;
+test(
+  "file store reclaims a lock whose pid was reused by a different process incarnation",
+  {
+    skip: !existsSync("/proc/self/stat"),
+  },
+  () => {
+    const directory = mkdtempSync(join(tmpdir(), "workflow-engine-pid-reuse-"));
+    const filePath = join(directory, "state.json");
+    const lockPath = `${filePath}.lock`;
 
-  try {
-    // The recorded pid is alive (this process), but its start time belongs to an earlier process.
-    writeFileSync(
-      lockPath,
-      JSON.stringify({
-        pid: process.pid,
-        startTime: "1",
-        acquiredAt: "2026-09-24T00:00:00.000Z",
-        token: "previous-incarnation",
-      }),
-      "utf8",
-    );
-    const store = createFileWorkflowEngineStore(filePath);
+    try {
+      // The recorded pid is alive (this process), but its start time belongs to an earlier process.
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          startTime: "1",
+          acquiredAt: "2026-09-24T00:00:00.000Z",
+          token: "previous-incarnation",
+        }),
+        "utf8",
+      );
+      const store = createFileWorkflowEngineStore(filePath);
 
-    const definition = store.saveDefinition({
-      workflowId: "demo",
-      version: 1,
-      digest: digestExecutableWorkflow(workflow),
-      workflow,
-      createdAt: "2026-09-24T02:00:00.000Z",
-    });
+      const definition = store.saveDefinition({
+        workflowId: "demo",
+        version: 1,
+        digest: digestExecutableWorkflow(workflow),
+        workflow,
+        createdAt: "2026-09-24T02:00:00.000Z",
+      });
 
-    assert.equal(definition.version, 1);
-    assert.equal(existsSync(lockPath), false);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
+      assert.equal(definition.version, 1);
+      assert.equal(existsSync(lockPath), false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
