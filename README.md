@@ -69,3 +69,21 @@ See [ROADMAP.md](./ROADMAP.md) for the next implementation slices and boundary c
 bun install
 bun run verify
 ```
+
+## Live run status
+
+A dispatcher can report lifecycle events while a run executes. `dispatch(request, observer)` receives an optional second argument `{ onEvent(event) }`; the request itself stays plain data. Dispatchers that ignore the observer keep working unchanged. Events are structural, for example Runner's `node.started`, `node.succeeded`, `node.failed`, `node.skipped`, `node.retrying` and `node.suspended`, with `nodeId`, `attempt` and `timestamp`.
+
+A connected host reads the current progress with these calls:
+
+- `engine.getLiveRun(runId)` returns the run's identity (run, workflow and version), `status: "running"`, and one entry per node with its current state, attempt and update time.
+- `engine.observeRun(runId, listener)` calls the listener on every change, and once more with the persisted terminal status. Listener errors never affect the run.
+
+Live status is ephemeral and bounded:
+
+- It is held in memory only, with one entry per node.
+- Event payloads such as outputs are never retained.
+- It is never written to the store.
+- It is dropped once the terminal run record is persisted.
+
+After a restart, only the durable run records and their recovery state remain.

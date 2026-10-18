@@ -17,6 +17,19 @@ import {
 import { assertExecutableWorkflow } from "./validation.js";
 
 export { createFileWorkflowEngineStore } from "./file-store.js";
+export type {
+  WorkflowLiveNodeState,
+  WorkflowLiveNodeStatus,
+  WorkflowLiveRunListener,
+  WorkflowLiveRunStatus,
+  WorkflowRunLiveEvent,
+} from "./live-runs.js";
+import {
+  WorkflowLiveRuns,
+  type WorkflowLiveRunListener,
+  type WorkflowLiveRunStatus,
+  type WorkflowRunLiveEvent,
+} from "./live-runs.js";
 export { InvalidWorkflowRunTransitionError } from "./run-state.js";
 export {
   WorkflowDefinitionVersionConflictError,
@@ -78,13 +91,25 @@ export type WorkflowRunDispatchRequest = {
   idempotencyKey: string;
 };
 
+/**
+ * Optional live lifecycle observer passed beside the (plain data) dispatch request. Dispatchers
+ * that support it report events while the run executes; the engine keeps them only as ephemeral
+ * status. Dispatchers that ignore it keep working unchanged.
+ */
+export type WorkflowRunDispatchObserver = {
+  onEvent(event: WorkflowRunLiveEvent): void;
+};
+
 export type WorkflowRunDispatchResult =
   | { status: "succeeded"; output: unknown; events?: readonly unknown[] }
   | { status: "failed"; error: unknown; events?: readonly unknown[] }
   | { status: "cancelled"; events?: readonly unknown[] };
 
 export type WorkflowRunDispatcher = {
-  dispatch(request: WorkflowRunDispatchRequest): Promise<WorkflowRunDispatchResult>;
+  dispatch(
+    request: WorkflowRunDispatchRequest,
+    observer?: WorkflowRunDispatchObserver,
+  ): Promise<WorkflowRunDispatchResult>;
 };
 
 export type WorkflowDispatchDeliveryState = "not-dispatched" | "unknown";
@@ -253,6 +278,13 @@ export type WorkflowEngine = {
   handleWebhook(request: WebhookRequest): Promise<WorkflowRunRecord[]>;
   tick(now?: Date): Promise<WorkflowRunRecord[]>;
   getRun(runId: string): WorkflowRunRecord | undefined;
+  /** Live node progress of a run this engine is dispatching right now; ephemeral. */
+  getLiveRun(runId: string): WorkflowLiveRunStatus | undefined;
+  /**
+   * Notifies `listener` on each live change of a run and once more with its persisted terminal
+   * status. Returns an unsubscribe function. Listener errors never affect the run.
+   */
+  observeRun(runId: string, listener: WorkflowLiveRunListener): () => void;
   listRuns(): WorkflowRunRecord[];
   listWorkflowVersions(workflowId: string): WorkflowDefinition[];
   listTriggers(): WorkflowTrigger[];
@@ -567,6 +599,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
   };
 
   const activeRunIds = new Set<string>();
+  const liveRuns = new WorkflowLiveRuns();
 
   const storedError = (error: unknown): unknown => {
     if (error instanceof WorkflowDispatchError) {
@@ -623,15 +656,20 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
 
     let run = claimed;
     activeRunIds.add(run.id);
+    liveRuns.begin(run.id, run.workflowId, run.workflowVersion);
 
     try {
-      const result = await options.dispatcher.dispatch({
-        runId: run.id,
-        workflow: clone(definition.workflow),
-        input: clone(run.input),
-        context: clone(run.context),
-        idempotencyKey: run.idempotencyKey,
-      });
+      const runId = run.id;
+      const result = await options.dispatcher.dispatch(
+        {
+          runId,
+          workflow: clone(definition.workflow),
+          input: clone(run.input),
+          context: clone(run.context),
+          idempotencyKey: run.idempotencyKey,
+        },
+        { onEvent: (event) => liveRuns.observe(runId, event) },
+      );
       // Durable stores persist JSON; a result they cannot store faithfully is parked as a
       // manual interruption below instead of being silently altered or replayed.
       if (result.status === "succeeded") {
@@ -685,6 +723,7 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
       return { dispatched: true, run: clone(run) };
     } finally {
       activeRunIds.delete(claimed.id);
+      liveRuns.finish(claimed.id, run.status);
     }
   };
 
@@ -958,6 +997,12 @@ export function createWorkflowEngine(options: WorkflowEngineOptions): WorkflowEn
 
     getRun(runId) {
       return store.getRun(runId);
+    },
+    getLiveRun(runId) {
+      return liveRuns.get(runId);
+    },
+    observeRun(runId, listener) {
+      return liveRuns.subscribe(runId, listener);
     },
     listRuns() {
       return store.listRuns();
