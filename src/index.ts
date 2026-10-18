@@ -46,6 +46,11 @@ export type ExecutableWorkflowNode = {
   inputs?: ExecutableWorkflowPort[];
   outputs?: ExecutableWorkflowPort[];
   data?: Record<string, unknown>;
+  /**
+   * Compiled-v2 bounded iteration (workflow-editor `control.iterate`). The engine validates its
+   * structure and stores/dispatches it unchanged; the runner executes it.
+   */
+  iteration?: Record<string, unknown>;
 };
 
 export type ExecutableWorkflowEdge = {
@@ -58,7 +63,8 @@ export type ExecutableWorkflowEdge = {
 
 export type ExecutableWorkflow = {
   format: "@moritzbrantner/workflow/compiled";
-  version: 1;
+  /** 1 for plain DAGs; 2 when the workflow contains bounded iteration. */
+  version: 1 | 2;
   nodes: ExecutableWorkflowNode[];
   edges: ExecutableWorkflowEdge[];
   order: string[];

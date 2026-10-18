@@ -18,7 +18,9 @@ export type ExecutableWorkflowDiagnosticCode =
   | "malformed-order"
   | "duplicate-order-id"
   | "unknown-order-id"
-  | "missing-order-id";
+  | "missing-order-id"
+  | "invalid-iteration"
+  | "nested-iteration-not-supported";
 
 export type ExecutableWorkflowDiagnostic = {
   code: ExecutableWorkflowDiagnosticCode;
@@ -121,53 +123,25 @@ function validatePorts(
   return ids;
 }
 
-export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowValidationResult {
-  if (!isRecord(value)) {
-    return {
-      ok: false,
-      diagnostics: [
-        diagnostic("malformed-envelope", "/", "Compiled workflow must be a non-null object."),
-      ],
-    };
-  }
+type IterationScope = "none" | "top-level" | "body";
 
-  if (value.format !== "@moritzbrantner/workflow/compiled") {
-    return {
-      ok: false,
-      diagnostics: [
-        diagnostic(
-          "unsupported-format",
-          "/format",
-          "Unsupported workflow format; expected '@moritzbrantner/workflow/compiled'.",
-        ),
-      ],
-    };
-  }
-
-  if (value.version !== 1) {
-    return {
-      ok: false,
-      diagnostics: [
-        diagnostic(
-          "unsupported-version",
-          "/version",
-          `Unsupported compiled workflow version: ${String(value.version)}.`,
-        ),
-      ],
-    };
-  }
-
-  const diagnostics: ExecutableWorkflowDiagnostic[] = [];
+/** Validates nodes, edges and order of one graph scope; returns ports by node id. */
+function validateGraph(
+  value: JsonRecord,
+  base: string,
+  diagnostics: ExecutableWorkflowDiagnostic[],
+  iteration: IterationScope,
+): Map<string, NodePorts> {
   const nodeIds = new Set<string>();
   const nodesById = new Map<string, NodePorts>();
 
   if (!Array.isArray(value.nodes)) {
     diagnostics.push(
-      diagnostic("malformed-nodes", "/nodes", "Compiled workflow nodes must be an array."),
+      diagnostic("malformed-nodes", `${base}/nodes`, "Compiled workflow nodes must be an array."),
     );
   } else {
     for (const [index, node] of value.nodes.entries()) {
-      const nodePath = `/nodes/${index}`;
+      const nodePath = `${base}/nodes/${index}`;
       if (!isRecord(node) || !isNonEmptyString(node.id) || !isNonEmptyString(node.kind)) {
         diagnostics.push(
           diagnostic(
@@ -200,6 +174,9 @@ export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowVa
 
       const inputs = validatePorts(node.inputs, `${nodePath}/inputs`, diagnostics);
       const outputs = validatePorts(node.outputs, `${nodePath}/outputs`, diagnostics);
+      if (node.kind === "control.iterate" || node.iteration !== undefined) {
+        validateIterationNode(node, nodePath, inputs, diagnostics, iteration);
+      }
 
       if (nodeIds.has(node.id)) {
         diagnostics.push(
@@ -220,11 +197,11 @@ export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowVa
   const edgeIds = new Set<string>();
   if (!Array.isArray(value.edges)) {
     diagnostics.push(
-      diagnostic("malformed-edges", "/edges", "Compiled workflow edges must be an array."),
+      diagnostic("malformed-edges", `${base}/edges`, "Compiled workflow edges must be an array."),
     );
   } else {
     for (const [index, edge] of value.edges.entries()) {
-      const edgePath = `/edges/${index}`;
+      const edgePath = `${base}/edges/${index}`;
       if (
         !isRecord(edge) ||
         !isNonEmptyString(edge.id) ||
@@ -308,12 +285,12 @@ export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowVa
 
   if (!Array.isArray(value.order)) {
     diagnostics.push(
-      diagnostic("malformed-order", "/order", "Compiled workflow order must be an array."),
+      diagnostic("malformed-order", `${base}/order`, "Compiled workflow order must be an array."),
     );
   } else {
     const orderIds = new Set<string>();
     for (const [index, nodeId] of value.order.entries()) {
-      const path = `/order/${index}`;
+      const path = `${base}/order/${index}`;
       if (!isNonEmptyString(nodeId)) {
         diagnostics.push(
           diagnostic("malformed-order", path, "Workflow order entries must be non-empty strings."),
@@ -347,13 +324,168 @@ export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowVa
         diagnostics.push(
           diagnostic(
             "missing-order-id",
-            "/order",
+            `${base}/order`,
             `Workflow order is missing node id '${nodeId}'.`,
           ),
         );
       }
     }
   }
+
+  return nodesById;
+}
+
+/**
+ * Validates the editor compiled-v2 bounded iteration construct (workflow-editor docs/compiler.md)
+ * structurally. The engine stores and dispatches it unchanged; Runner executes it.
+ */
+function validateIterationNode(
+  node: JsonRecord,
+  nodePath: string,
+  inputs: Set<string> | null,
+  diagnostics: ExecutableWorkflowDiagnostic[],
+  scope: IterationScope,
+): void {
+  const invalid = (path: string, message: string) =>
+    diagnostics.push(diagnostic("invalid-iteration", `${nodePath}${path}`, message));
+  if (scope === "none") {
+    if (node.iteration !== undefined) {
+      invalid("/iteration", "Bounded iteration requires compiled workflow version 2.");
+    }
+    return;
+  }
+  if (scope === "body") {
+    diagnostics.push(
+      diagnostic(
+        "nested-iteration-not-supported",
+        nodePath,
+        "An iteration cannot be nested inside an iteration body.",
+      ),
+    );
+    return;
+  }
+  if (node.kind !== "control.iterate") {
+    invalid("/kind", "Only control.iterate nodes may declare an iteration.");
+    return;
+  }
+  const iteration = node.iteration;
+  if (!isRecord(iteration)) {
+    invalid("/iteration", "control.iterate requires an iteration object.");
+    return;
+  }
+  const max = iteration.maxIterations;
+  if (typeof max !== "number" || !Number.isInteger(max) || max < 1) {
+    invalid(
+      "/iteration/maxIterations",
+      "Iteration requires a finite whole-number maxIterations of at least 1.",
+    );
+  }
+  if (
+    !isRecord(iteration.state) ||
+    iteration.state.inputPortId !== "state" ||
+    !(inputs?.has("state") ?? false)
+  ) {
+    invalid("/iteration/state", "Iteration state must use the node's 'state' input port.");
+  }
+  const stop = iteration.stop;
+  const stopKind = isRecord(stop) ? stop.kind : undefined;
+  if (
+    !isRecord(stop) ||
+    !((stop.kind === "body-output" && stop.outputId === "converged") || stop.kind === "limit-only")
+  ) {
+    invalid("/iteration/stop", "Iteration stop must be body-output 'converged' or limit-only.");
+  }
+  if (iteration.candidate !== "latest-state") {
+    invalid("/iteration/candidate", "Iteration candidate must be 'latest-state'.");
+  }
+  if (
+    !isRecord(iteration.result) ||
+    !isNonEmptyString(iteration.result.outputPortId) ||
+    !Array.isArray(iteration.result.statuses)
+  ) {
+    invalid("/iteration/result", "Iteration result requires an output port and statuses.");
+  }
+  const body = iteration.body;
+  if (!isRecord(body)) {
+    invalid("/iteration/body", "Iteration requires a body graph.");
+    return;
+  }
+  const bodyPorts = validateGraph(body, `${nodePath}/iteration/body`, diagnostics, "body");
+  const boundary = (value: unknown, path: string, direction: "inputs" | "outputs") => {
+    const ports =
+      isRecord(value) && isNonEmptyString(value.nodeId)
+        ? bodyPorts.get(value.nodeId)?.[direction]
+        : undefined;
+    if (!isRecord(value) || !isNonEmptyString(value.portId) || !ports?.has(value.portId)) {
+      invalid(
+        path,
+        `Iteration boundary must reference an existing body ${direction === "inputs" ? "input" : "output"} port.`,
+      );
+    }
+  };
+  if (!Array.isArray(body.inputs)) {
+    invalid("/iteration/body/inputs", "Iteration body inputs must be an array.");
+  } else {
+    for (const [index, input] of body.inputs.entries()) {
+      const path = `/iteration/body/inputs/${index}`;
+      boundary(input, path, "inputs");
+      if (!isRecord(input) || !isNonEmptyString(input.id) || !(inputs?.has(input.id) ?? false)) {
+        invalid(
+          `${path}/id`,
+          "Iteration body input must name an input port of the iteration node.",
+        );
+      }
+    }
+  }
+  const outputs = body.outputs;
+  if (!isRecord(outputs)) {
+    invalid("/iteration/body/outputs", "Iteration body outputs must be an object.");
+    return;
+  }
+  boundary(outputs.next, "/iteration/body/outputs/next", "outputs");
+  if (stopKind === "body-output" || outputs.converged !== undefined) {
+    boundary(outputs.converged, "/iteration/body/outputs/converged", "outputs");
+  }
+}
+
+export function validateExecutableWorkflow(value: unknown): ExecutableWorkflowValidationResult {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      diagnostics: [
+        diagnostic("malformed-envelope", "/", "Compiled workflow must be a non-null object."),
+      ],
+    };
+  }
+
+  if (value.format !== "@moritzbrantner/workflow/compiled") {
+    return {
+      ok: false,
+      diagnostics: [
+        diagnostic(
+          "unsupported-format",
+          "/format",
+          "Unsupported workflow format; expected '@moritzbrantner/workflow/compiled'.",
+        ),
+      ],
+    };
+  }
+
+  if (value.version !== 1 && value.version !== 2) {
+    return {
+      ok: false,
+      diagnostics: [
+        diagnostic(
+          "unsupported-version",
+          "/version",
+          `Unsupported compiled workflow version: ${String(value.version)}.`,
+        ),
+      ],
+    };
+  }
+
+  const diagnostics: ExecutableWorkflowDiagnostic[] = [];
+  validateGraph(value, "", diagnostics, value.version === 2 ? "top-level" : "none");
 
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
