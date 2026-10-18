@@ -461,9 +461,21 @@ function validateReferences(value: JsonRecord, diagnostics: ExecutableWorkflowDi
     return;
   }
   const edges = new Map<string, Array<{ to: string; bounded: boolean }>>();
-  const checkNodes = (nodes: unknown, base: string, key: string) => {
-    const references: Array<{ to: string; bounded: boolean }> = [];
+  // Reference nodes may also sit in iteration bodies at any depth (editor #141); they resolve
+  // against the root closure and count as edges of the enclosing graph.
+  const referencesIn = (
+    nodes: unknown,
+    base: string,
+    references: Array<{ to: string; bounded: boolean }>,
+  ) => {
     (Array.isArray(nodes) ? nodes : []).forEach((node, index) => {
+      if (isRecord(node) && isRecord(node.iteration) && isRecord(node.iteration.body)) {
+        referencesIn(
+          node.iteration.body.nodes,
+          `${base}/nodes/${index}/iteration/body`,
+          references,
+        );
+      }
       if (!isRecord(node) || node.workflowRef === undefined) {
         return;
       }
@@ -490,6 +502,10 @@ function validateReferences(value: JsonRecord, diagnostics: ExecutableWorkflowDi
       }
       references.push({ to: reference.workflow, bounded: maxDepth !== undefined });
     });
+  };
+  const checkNodes = (nodes: unknown, base: string, key: string) => {
+    const references: Array<{ to: string; bounded: boolean }> = [];
+    referencesIn(nodes, base, references);
     edges.set(key, references);
   };
   checkNodes(value.nodes, "", "");
