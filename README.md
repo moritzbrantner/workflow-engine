@@ -57,6 +57,8 @@ An unclassified dispatcher exception becomes `interrupted` with `manual` disposi
 
 Cron scheduling commits the occurrence claim and its initial queued run in one store transaction, so a process cannot durably claim a minute without leaving a recoverable run. Dispatch/recovery similarly uses an atomic store claim before invoking the dispatcher, preventing two engine instances from executing the same queued run concurrently.
 
+Scheduled occurrences may overlap (TECH-002). `tick()` claims and starts every matching occurrence synchronously, then resolves once those dispatches finish. A host should therefore call `tick()` for each minute **without awaiting earlier ticks**: a long-running occurrence must not delay the next one. Each occurrence gets its own run ID, idempotency key and pinned workflow version, and re-observing a minute, on any engine instance sharing the store or after a restart, never dispatches it twice. `src/cron-overlap.test.ts` proves this with an unresolved first run, using both the in-memory and the file store.
+
 ## Roadmap
 
 See [ROADMAP.md](./ROADMAP.md) for the next implementation slices and boundary constraints.
