@@ -66,6 +66,8 @@ export type ExecutableWorkflowNode = {
   iteration?: Record<string, unknown>;
   /** Compiled human task contract (workflow-editor `human.task.approval` / `human.task.input`). */
   humanTask?: unknown;
+  /** Version 3 Workflow Reference; Runner executes it and enforces maxDepth. */
+  workflowRef?: { workflow: string; maxDepth?: number };
 };
 
 export type ExecutableWorkflowEdge = {
@@ -78,13 +80,15 @@ export type ExecutableWorkflowEdge = {
 
 export type ExecutableWorkflow = {
   format: "@moritzbrantner/workflow/compiled";
-  /** 1 for plain DAGs; 2 when the workflow contains bounded iteration. */
-  version: 1 | 2;
+  /** 1 for plain DAGs; 2 adds bounded iteration; 3 adds the Workflow Reference closure. */
+  version: 1 | 2 | 3;
   nodes: ExecutableWorkflowNode[];
   edges: ExecutableWorkflowEdge[];
   order: string[];
   /** TypeScript declarations the compiled port types refer to (workflow-editor). */
   typeDeclarations?: string;
+  /** Version 3: frozen referenced definitions keyed `<documentId>@<version>` (opaque here). */
+  workflows?: Record<string, Record<string, unknown>>;
 };
 
 export type WorkflowRunDispatchRequest = {

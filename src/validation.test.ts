@@ -122,7 +122,7 @@ test("returns stable structured diagnostics for malformed compiled-v1 graphs", (
 test("does not interpret unsupported compiled versions as version 1", () => {
   const result = validateExecutableWorkflow({
     format: "@moritzbrantner/workflow/compiled",
-    version: 3,
+    version: 4,
     nodes: "future-shape",
   });
 
@@ -132,7 +132,7 @@ test("does not interpret unsupported compiled versions as version 1", () => {
       {
         code: "unsupported-version",
         path: "/version",
-        message: "Unsupported compiled workflow version: 3.",
+        message: "Unsupported compiled workflow version: 4.",
       },
     ],
   });
