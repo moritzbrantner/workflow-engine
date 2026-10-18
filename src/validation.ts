@@ -125,6 +125,7 @@ function validatePorts(
   return ids;
 }
 
+/** `none`: compiled v1, where iteration is invalid; otherwise iteration may nest (editor #97). */
 type IterationScope = "none" | "top-level" | "body";
 
 /** Validates nodes, edges and order of one graph scope; returns ports by node id. */
@@ -354,16 +355,6 @@ function validateIterationNode(
     if (node.iteration !== undefined) {
       invalid("/iteration", "Bounded iteration requires compiled workflow version 2.");
     }
-    return;
-  }
-  if (scope === "body") {
-    diagnostics.push(
-      diagnostic(
-        "nested-iteration-not-supported",
-        nodePath,
-        "An iteration cannot be nested inside an iteration body.",
-      ),
-    );
     return;
   }
   if (node.kind !== "control.iterate") {

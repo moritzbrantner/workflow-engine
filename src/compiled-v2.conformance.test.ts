@@ -94,7 +94,7 @@ test("registers, stores and dispatches the editor compiled-v2 fixture unchanged 
   }
 });
 
-test("rejects malformed or unbounded iterations before dispatch", () => {
+test("rejects malformed or unbounded iterations before dispatch", async () => {
   const cases: Array<[string, unknown, string]> = [
     [
       "missing bound",
@@ -144,15 +144,42 @@ test("rejects malformed or unbounded iterations before dispatch", () => {
     }
   }
 
+  // Nesting is allowed (editor #97), but an inner bound is still validated at its nested path.
   const nested = withIteration((iteration) => {
-    iteration.body.nodes[0].kind = "control.iterate";
-    iteration.body.nodes[0].iteration = structuredClone(iteration);
+    const inner = structuredClone(iteration);
+    inner.maxIterations = 0;
+    iteration.body.nodes.push({
+      id: "inner",
+      kind: "control.iterate",
+      inputs: [{ id: "state" }],
+      outputs: [{ id: "result" }],
+      iteration: inner,
+    });
+    iteration.body.order.push("inner");
   });
   const nestedResult = validateExecutableWorkflow(nested);
-  assert.equal(
-    !nestedResult.ok && nestedResult.diagnostics[0]?.code,
-    "nested-iteration-not-supported",
+  assert.ok(
+    !nestedResult.ok &&
+      nestedResult.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "invalid-iteration" &&
+          diagnostic.path === "/nodes/2/iteration/body/nodes/2/iteration/maxIterations",
+      ),
+    JSON.stringify(nestedResult),
   );
+
+  const nestedFixture = JSON.parse(
+    readFileSync(new URL("../fixtures/compiled-v2-nested-iteration.json", import.meta.url), "utf8"),
+  ) as ExecutableWorkflow;
+  assert.equal(validateExecutableWorkflow(nestedFixture).ok, true);
+  const nestedHost = recordingDispatcher();
+  const nestedEngine = createWorkflowEngine({
+    dispatcher: nestedHost.dispatcher,
+    createId: ids("nested"),
+  });
+  nestedEngine.registerWorkflow({ workflowId: "nested", workflow: nestedFixture });
+  assert.equal((await nestedEngine.startRun({ workflowId: "nested" })).status, "succeeded");
+  assert.deepEqual(nestedHost.requests[0]?.workflow, nestedFixture);
 
   const v1WithIteration = { ...(structuredClone(compiledV2Fixture) as object), version: 1 };
   const v1Result = validateExecutableWorkflow(v1WithIteration);
