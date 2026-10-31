@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
-import type { WorkflowRunClaimOptions, WorkflowRunRecord, WorkflowRunStatus } from "./index.js";
+import type { WorkflowRunClaimOptions, WorkflowRunRecord, WorkflowRunStatus } from "./types.js";
 
 export class InvalidWorkflowRunTransitionError extends Error {
   readonly code = "INVALID_WORKFLOW_RUN_TRANSITION" as const;

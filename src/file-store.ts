@@ -11,13 +11,6 @@ import {
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import type {
-  WorkflowDefinition,
-  WorkflowEngineStore,
-  WorkflowRunRecord,
-  WorkflowScheduleClaim,
-  WorkflowTrigger,
-} from "./index.js";
 import { assertStorableRecord as assertStorable, withoutUndefinedFields } from "./json-value.js";
 import { assertWorkflowRunTransition, prepareWorkflowRunForDispatch } from "./run-state.js";
 import {
@@ -25,6 +18,13 @@ import {
   WorkflowRunIdConflictError,
   WorkflowRunIdempotencyConflictError,
 } from "./store-errors.js";
+import type {
+  WorkflowDefinition,
+  WorkflowEngineStore,
+  WorkflowRunRecord,
+  WorkflowScheduleClaim,
+  WorkflowTrigger,
+} from "./types.js";
 
 const FILE_STORE_SCHEMA_VERSION = 1 as const;
 const LOCK_RETRY_MILLISECONDS = 5;

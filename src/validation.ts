@@ -1,4 +1,4 @@
-import type { ExecutableWorkflow } from "./index.js";
+import type { ExecutableWorkflow } from "./types.js";
 
 export type ExecutableWorkflowDiagnosticCode =
   | "malformed-envelope"

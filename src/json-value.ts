@@ -132,3 +132,7 @@ export function assertStorableRecord(record: object, kind: string): void {
 export function withoutUndefinedFields<T extends object>(record: T): T {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as T;
 }
+
+export function clone<T>(value: T): T {
+  return structuredClone(value);
+}
